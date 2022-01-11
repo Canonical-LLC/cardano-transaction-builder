@@ -21,13 +21,11 @@ import           System.IO.Temp
 import           Data.Maybe
 import           System.FilePath.Posix
 import           GHC.Generics
+import           System.Exit
 
 -- TODO
--- make all the types that use json
--- polymorphic
--- they can either have value
--- or filepath
--- before converting flags they have to become filepaths
+-- handle mint scripts
+-- handle metadata
 
 newtype Value = Value { unValue :: Map String (Map String Int) }
   deriving (Show, Eq, Ord)
@@ -77,8 +75,6 @@ data ScriptInfo = ScriptInfo
   , siDatum     :: Aeson.Value
   , siRedeemer  :: Aeson.Value
   } deriving (Show, Eq, Ord, Generic)
-
-
 
 data DatumInfo = DatumInfo
   { diHash  :: String
@@ -440,7 +436,7 @@ waitForNextBlock = do
 
 ----
 
-toTestnetFlag :: Maybe Int -> String
+toTestnetFlag :: Maybe Integer -> String
 toTestnetFlag = \case
   Nothing -> "--mainnet"
   Just x  -> "--testnet " <> show x
@@ -456,7 +452,7 @@ inputsToFlags :: [Input] -> [String]
 inputsToFlags = map toInputFlag
 
 flattenValue :: Value -> [(String, String, Int)]
-flattenValue = undefined
+flattenValue (Value m) =  concatMap (\(pId, t) -> map (\(tn, c) -> (pId, tn, c)) $ M.toList t) $ M.toList m
 
 valueToOutput :: Value -> String
 valueToOutput
@@ -465,28 +461,18 @@ valueToOutput
       (\(p, t, v) -> ["+", show v, p <> "." <> t])
   . flattenValue
 
-{-
-
-oops need to write this value out.
-
-data DatumInfo = DatumInfo
-  { diHash  :: String
-  , diDatum :: Maybe Aeson.Value
-  }
-
-
--}
+pprJson :: Aeson.Value -> String
+pprJson = BSLC.unpack . Aeson.encode
 
 datumToOutput :: Maybe DatumInfo -> [String]
-datumToOutput = undefined
-{-
 datumToOutput = \case
   Nothing -> []
-  Just DatumInfo {..} ->
-    [
-    ,
-    ]
--}
+  Just DatumInfo {..}
+    -> ("--tx-out-datum-hash " <> diHash)
+    :   case diDatum of
+          Nothing -> []
+          Just d -> ["--tx-out-datum-embed-value '" <> pprJson d <> "'"]
+
 
 outputsToFlag :: Output -> [String]
 outputsToFlag Output {..}
@@ -501,21 +487,29 @@ outputsToFlags :: [Output] -> [String]
 outputsToFlags = concatMap outputsToFlag
 
 changeAddressToFlag :: Last Address -> [String]
-changeAddressToFlag = undefined
+changeAddressToFlag = \case
+  Last Nothing -> error "Missing change address!"
+  Last (Just a) -> ["--change-address " <> a]
 
 signersToRequiredSignerFlags :: [FilePath] -> [String]
-signersToRequiredSignerFlags = undefined
+signersToRequiredSignerFlags signers = map ("--required-signer " <>) signers
 
 toMintFlags :: Value -> [String]
-toMintFlags = undefined
+toMintFlags v = ["--mint " <> pprValue v]
 
 toTimeRangeFlags :: Maybe TimeRange -> [String]
-toTimeRangeFlags = undefined
+toTimeRangeFlags = \case
+  Nothing -> []
+  Just TimeRange {..}
+    -> ("--invalid-before " <> show trStart)
+    :  case trEnd of
+        Nothing -> []
+        Just e -> ["--invalid-hereafter " <> show e]
 
 toBodyFlags :: FilePath -> [String]
-toBodyFlags = undefined
+toBodyFlags tmpDir = ["--out-file " <> (tmpDir </> "body.txt")]
 
-transactionBuilderToBuildFlags :: FilePath -> Maybe Int -> TransactionBuilder -> [String]
+transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> TransactionBuilder -> [String]
 transactionBuilderToBuildFlags tmpDir testnet TransactionBuilder {..}
   =  ["transaction", "build", "--alonzo-era"]
   <> [toTestnetFlag testnet]
@@ -528,15 +522,15 @@ transactionBuilderToBuildFlags tmpDir testnet TransactionBuilder {..}
   <> toBodyFlags tmpDir
 
 toSigningBodyFlag :: FilePath -> [String]
-toSigningBodyFlag = undefined
+toSigningBodyFlag tmpDir = ["--tx-body-file " <> (tmpDir </> "body.txt")]
 
 signersToSigningFlags :: [FilePath] -> [String]
-signersToSigningFlags = undefined
+signersToSigningFlags = map ("--signing-key-file " <>)
 
 toSignedTxFile :: FilePath -> [String]
-toSignedTxFile = undefined
+toSignedTxFile tmpDir = ["--out-file " <> (tmpDir </> "signed-body.txt")]
 
-transactionBuilderToSignFlags :: FilePath -> Maybe Int -> TransactionBuilder -> [String]
+transactionBuilderToSignFlags :: FilePath -> Maybe Integer -> TransactionBuilder -> [String]
 transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..}
   =  ["transaction", "sign"]
   <> toSigningBodyFlag tmpDir
@@ -545,5 +539,12 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..}
   <> toSignedTxFile tmpDir
 
 
-eval :: Tx () -> IO ()
-eval = undefined
+eval :: Maybe Integer -> Tx () -> IO ()
+eval mTestnet (Tx m)= withSystemTempDirectory "tx-builder" $ \tempDir -> do
+  txBuilder <- execWriterT (runReaderT m mTestnet)
+
+  let
+    flags = transactionBuilderToSignFlags tempDir mTestnet txBuilder
+
+  exitCode <- system $ "cardano-cli " <> unwords flags
+  unless (exitCode == ExitSuccess) $ throwIO exitCode
