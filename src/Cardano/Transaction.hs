@@ -20,8 +20,17 @@ import qualified Data.Aeson.Lens as AL
 import           System.IO.Temp
 import           Data.Maybe
 import           System.FilePath.Posix
+import           GHC.Generics
+
+-- TODO
+-- make all the types that use json
+-- polymorphic
+-- they can either have value
+-- or filepath
+-- before converting flags they have to become filepaths
 
 newtype Value = Value { unValue :: Map String (Map String Int) }
+  deriving (Show, Eq, Ord)
 type Address = String
 type DatumHash = String
 type TxId = String
@@ -64,27 +73,30 @@ pprValue
   . unValue
 
 data ScriptInfo = ScriptInfo
-  { siDatum     :: Aeson.Value
+  { siScript    :: FilePath
+  , siDatum     :: Aeson.Value
   , siRedeemer  :: Aeson.Value
-  , siScript    :: FilePath
-  }
+  } deriving (Show, Eq, Ord, Generic)
+
+
 
 data DatumInfo = DatumInfo
   { diHash  :: String
   , diDatum :: Maybe Aeson.Value
-  }
+  } deriving (Show, Eq, Ord, Generic)
 
 data UTxO = UTxO
   { utxoIndex     :: String
   , utxoTx        :: TxId
   , utxoDatumHash :: String
   , utxoValue     :: Value
-  }
+  } deriving (Show, Eq, Ord)
 
 data Input = Input
   { iUtxo       :: UTxO
   , iScriptInfo :: Maybe ScriptInfo
-  }
+  } deriving (Show, Eq, Ord, Generic)
+
 
 inputFromUTxO :: UTxO -> Input
 inputFromUTxO x = Input x Nothing
@@ -93,14 +105,14 @@ data Output = Output
   { oAddress   :: Address
   , oValue     :: Value
   , oDatumInfo :: Maybe DatumInfo
-  }
+  } deriving (Show, Eq, Ord, Generic)
 
 type Slot = Integer
 
 data TimeRange = TimeRange
   { trStart :: Slot
   , trEnd   :: Maybe Integer
-  }
+  } deriving (Show, Eq, Ord)
 
 instance Monoid TimeRange where
   mempty = TimeRange 0 Nothing
@@ -123,7 +135,7 @@ data TransactionBuilder = TransactionBuilder
   , tSignatures    :: [FilePath]
   , tMetadata      :: ByteString
   , tChangeAddress :: Last Address
-  }
+  } deriving (Show, Eq, Ord, Generic)
 
 instance Semigroup TransactionBuilder where
   x <> y = TransactionBuilder
@@ -428,14 +440,65 @@ waitForNextBlock = do
 
 ----
 
-toTestnetFlag :: Maybe Int -> [String]
-toTestnetFlag = undefined
+toTestnetFlag :: Maybe Int -> String
+toTestnetFlag = \case
+  Nothing -> "--mainnet"
+  Just x  -> "--testnet " <> show x
+
+toInputFlag :: Input -> String
+toInputFlag Input {iUtxo = UTxO {..}}
+  =  "--tx-in "
+  <> utxoTx
+  <> "#"
+  <> utxoIndex
 
 inputsToFlags :: [Input] -> [String]
-inputsToFlags = undefined
+inputsToFlags = map toInputFlag
+
+flattenValue :: Value -> [(String, String, Int)]
+flattenValue = undefined
+
+valueToOutput :: Value -> String
+valueToOutput
+  = unwords
+  . concatMap
+      (\(p, t, v) -> ["+", show v, p <> "." <> t])
+  . flattenValue
+
+{-
+
+oops need to write this value out.
+
+data DatumInfo = DatumInfo
+  { diHash  :: String
+  , diDatum :: Maybe Aeson.Value
+  }
+
+
+-}
+
+datumToOutput :: Maybe DatumInfo -> [String]
+datumToOutput = undefined
+{-
+datumToOutput = \case
+  Nothing -> []
+  Just DatumInfo {..} ->
+    [
+    ,
+    ]
+-}
+
+outputsToFlag :: Output -> [String]
+outputsToFlag Output {..}
+  = [ "--tx-out "
+    <> oAddress
+    <> " "
+    <> valueToOutput oValue
+    ]
+  <> datumToOutput oDatumInfo
 
 outputsToFlags :: [Output] -> [String]
-outputsToFlags = undefined
+outputsToFlags = concatMap outputsToFlag
 
 changeAddressToFlag :: Last Address -> [String]
 changeAddressToFlag = undefined
@@ -455,7 +518,7 @@ toBodyFlags = undefined
 transactionBuilderToBuildFlags :: FilePath -> Maybe Int -> TransactionBuilder -> [String]
 transactionBuilderToBuildFlags tmpDir testnet TransactionBuilder {..}
   =  ["transaction", "build", "--alonzo-era"]
-  <> toTestnetFlag testnet
+  <> [toTestnetFlag testnet]
   <> inputsToFlags tInputs
   <> outputsToFlags tOutputs
   <> changeAddressToFlag tChangeAddress
@@ -478,7 +541,7 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..}
   =  ["transaction", "sign"]
   <> toSigningBodyFlag tmpDir
   <> signersToSigningFlags tSignatures
-  <> toTestnetFlag testnet
+  <> [toTestnetFlag testnet]
   <> toSignedTxFile tmpDir
 
 

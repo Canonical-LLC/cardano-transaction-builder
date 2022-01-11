@@ -48,6 +48,11 @@ library
       RecordWildCards
       GeneralizedNewtypeDeriving
       OverloadedStrings
+      LambdaCase
+      DeriveGeneric
+      DeriveFunctor
+      DeriveTraversable
+      DeriveFoldable
     exposed-modules:
       Cardano.Transaction
     ghc-options:
