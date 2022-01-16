@@ -27,7 +27,7 @@ import           System.Exit
 -- handle mint scripts
 -- handle metadata
 
-newtype Value = Value { unValue :: Map String (Map String Int) }
+newtype Value = Value { unValue :: Map String (Map String Integer) }
   deriving (Show, Eq, Ord)
 type Address = String
 type DatumHash = String
@@ -39,7 +39,25 @@ instance Monoid Value where
 instance Semigroup Value where
   Value x <> Value y = Value $ M.unionWith (M.unionWith (+)) x y
 
-diffTokenMapWithNegatives :: Map String Int -> Map String Int -> Maybe (Map String Int)
+diffTokenMap :: Map String Integer -> Map String Integer -> Maybe (Map String Integer)
+diffTokenMap x y =
+  let
+    diffCoin a b =
+         let a' = a - b
+         in if a' < 1
+              then Nothing
+              else Just a'
+
+    new = M.differenceWith diffCoin x y
+
+    in if new == mempty
+          then Nothing
+          else Just new
+
+diffValues :: Value -> Value -> Value
+diffValues (Value x) (Value y) = Value $ M.differenceWith (diffTokenMap) x y
+
+diffTokenMapWithNegatives :: Map String Integer -> Map String Integer -> Maybe (Map String Integer)
 diffTokenMapWithNegatives x y =
   let
     diffCoin a b =
@@ -54,10 +72,10 @@ diffTokenMapWithNegatives x y =
           then Nothing
           else Just new
 
-diffValue :: Value -> Value -> Value
-diffValue (Value x) (Value y) = Value $ M.differenceWith (diffTokenMapWithNegatives) x y
+diffValuesWithNegatives :: Value -> Value -> Value
+diffValuesWithNegatives (Value x) (Value y) = Value $ M.differenceWith (diffTokenMapWithNegatives) x y
 
-pprPolicyTokens :: String -> Map String Int -> [String]
+pprPolicyTokens :: String -> Map String Integer -> [String]
 pprPolicyTokens policyId tokenMap = if policyId == ""
   then map (\count -> show count <> " lovelace") $ M.elems tokenMap
   else map (\(tokenName, count) -> show count <> " " <> policyId <> "." <> tokenName )
@@ -287,6 +305,7 @@ hashScript plutusFile = readFile $ replaceExtension plutusFile "addr"
 
 -- Write datum to a temporary file
 -- cardano-cli transaction hash-script-data --script-data-file
+-- TODO use the
 hashDatum :: Maybe Integer -> Aeson.Value -> IO String
 hashDatum mTestnet value = withSystemTempFile "datum" $ \datumFile _ -> do
   BSL.writeFile datumFile $ Aeson.encode value
@@ -318,11 +337,23 @@ firstScriptInput scriptFile datum redeemer = do
     findScriptInputs scriptAddress datumHash
   scriptInput utxo scriptFile datum redeemer
 
---
+
+-- Look up the input.
+-- Merge the inputs.
+-- Merge the outputs.
+-- diff the inputs from the outputs.
 balanceNonAdaAssets :: Address
                     -- ^ Change address
                     -> Tx ()
-balanceNonAdaAssets = undefined
+balanceNonAdaAssets addr = do
+  TransactionBuilder {..} <- getTransactionBuilder
+  let
+    inputValue = mconcat $ map (utxoValue . iUtxo) tInputs
+    outputValue = mconcat $ map oValue tOutputs
+    theDiffValue = inputValue `diffValues` outputValue
+  output addr theDiffValue
+
+
 
 selectInputs :: Value
              -- ^ Outputs to match
@@ -337,7 +368,7 @@ selectInputs outputValue address = do
   -- Merge the utxos values
   let mergeInputValue = mconcat $ map (utxoValue . iUtxo) inputs
   -- return the inputs and the remaining outputs
-  pure (inputs, diffValue outputValue mergeInputValue)
+  pure (inputs, diffValuesWithNegatives outputValue mergeInputValue)
 
 selectInputsAndBalance
   :: Value
@@ -451,7 +482,7 @@ toInputFlag Input {iUtxo = UTxO {..}}
 inputsToFlags :: [Input] -> [String]
 inputsToFlags = map toInputFlag
 
-flattenValue :: Value -> [(String, String, Int)]
+flattenValue :: Value -> [(String, String, Integer)]
 flattenValue (Value m) =  concatMap (\(pId, t) -> map (\(tn, c) -> (pId, tn, c)) $ M.toList t) $ M.toList m
 
 valueToOutput :: Value -> String
