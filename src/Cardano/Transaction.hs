@@ -370,6 +370,9 @@ selectInputs outputValue address = do
   -- return the inputs and the remaining outputs
   pure (inputs, diffValuesWithNegatives outputValue mergeInputValue)
 
+-- Okay so this finds all of the inputs that can
+-- cover the outputs. Then it balances the left over
+-- to the balance address.
 selectInputsAndBalance
   :: Value
   -- ^ Outputs to match
@@ -379,18 +382,32 @@ selectInputsAndBalance
   -- ^ Balance address
   -> Tx ([Input], Value)
   -- ^ The inputs, change output, and the remaining unfilled outputs
-selectInputsAndBalance = undefined
+selectInputsAndBalance outputValue addr balanceAddr = do
+  --
+  (inputs, remaining) <- selectInputs outputValue addr
+  let
+    covered = outputValue `diffValues` remaining
+    combinedInput = mconcat $ map (utxoValue . iUtxo) inputs
+    change = combinedInput `diffValues` covered
 
+  output balanceAddr change
+  pure (inputs, remaining)
+
+-- Same as above but self balances
 selectInputsSelfBalance :: Value
              -- ^ Outputs to match
              -> Address
              -- ^ Balance address
              -> Tx ([Input], Value)
              -- ^ The inputs, change output, and the remaining unfilled outputs
-selectInputsSelfBalance = undefined
+selectInputsSelfBalance o a = selectInputsAndBalance o a a
 
+-- Select for all the inputs and self balance
 selectAllInputsAndSelfBalance :: Address -> Tx ([Input], Value)
-selectAllInputsAndSelfBalance = undefined
+selectAllInputsAndSelfBalance addr = do
+  TransactionBuilder {..} <- getTransactionBuilder
+  let combinedOutput = mconcat $ map oValue tOutputs
+  selectInputsSelfBalance combinedOutput addr
 
 currentSlotIO :: Maybe Integer -> IO Slot
 currentSlotIO mTestnet = do
