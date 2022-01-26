@@ -54,6 +54,7 @@ library
       DeriveTraversable
       DeriveFoldable
     exposed-modules:
+      Cardano.Example
       Cardano.Transaction
     ghc-options:
       -Wall -Wcompat -Werror

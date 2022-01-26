@@ -1,8 +1,9 @@
 module Cardano.Transaction where
 import qualified Data.Map.Strict as M
 import           Data.Map (Map)
-import           Control.Monad.Writer
+import           Control.Monad.State
 import           Control.Monad.Reader
+import           Data.Monoid
 import           System.Process
 import qualified Plutus.V1.Ledger.Api as A
 import qualified Cardano.Api.Shelley as S
@@ -12,7 +13,7 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.List (intercalate)
 import           Control.Exception
-import           Text.Read
+import           Text.Read (readMaybe)
 import           Control.Concurrent
 import qualified Control.Lens as L
 import           Data.List.Split
@@ -22,16 +23,20 @@ import           Data.Maybe
 import           System.FilePath.Posix
 import           GHC.Generics
 import           System.Exit
+import           Data.String
 
--- TODO
--- handle mint scripts
--- handle metadata
+
 
 newtype Value = Value { unValue :: Map String (Map String Integer) }
   deriving (Show, Eq, Ord)
 type Address = String
 type DatumHash = String
 type TxId = String
+
+instance IsString Value where
+  fromString
+    = fromMaybe (error "FromString: failed to parse Value")
+    . parseValue
 
 instance Monoid Value where
   mempty = Value mempty
@@ -102,7 +107,7 @@ data DatumInfo = DatumInfo
 data UTxO = UTxO
   { utxoIndex     :: String
   , utxoTx        :: TxId
-  , utxoDatumHash :: String
+  , utxoDatumHash :: Maybe String
   , utxoValue     :: Value
   } deriving (Show, Eq, Ord)
 
@@ -173,46 +178,52 @@ instance Monoid TransactionBuilder where
     , tChangeAddress = mempty
     }
 
-newtype Tx a = Tx { unTx :: ReaderT (Maybe Integer) (WriterT TransactionBuilder IO) a }
-  deriving(Functor, Applicative, Monad, MonadIO, MonadWriter TransactionBuilder, MonadReader (Maybe Integer))
+newtype Tx a = Tx { unTx :: ReaderT (Maybe Integer) (StateT TransactionBuilder IO) a }
+  deriving(Functor, Applicative, Monad, MonadIO, MonadState TransactionBuilder, MonadReader (Maybe Integer))
 
 getTestnetConfig :: Tx (Maybe Integer)
 getTestnetConfig = ask
 
+putpend :: TransactionBuilder -> Tx ()
+putpend tb = modify (<> tb)
+
 getTransactionBuilder :: Tx TransactionBuilder
-getTransactionBuilder = snd <$> listen (pure ())
+getTransactionBuilder = get
 
 mint :: Value -> Tx ()
-mint v = tell $ mempty { tMint = v }
+mint v = putpend $ mempty { tMint = v }
 
 sign :: FilePath -> Tx ()
-sign x = tell $ mempty { tSignatures = [x] }
+sign x = putpend $ mempty { tSignatures = [x] }
 
 metadata :: ByteString -> Tx ()
-metadata x = tell $ mempty { tMetadata = x }
+metadata x = putpend $ mempty { tMetadata = x }
 
 timerange :: Slot -> Slot -> Tx ()
-timerange start stop = tell $ mempty { tTimeRange = Just $ TimeRange start $ Just stop }
+timerange start stop = putpend $ mempty { tTimeRange = Just $ TimeRange start $ Just stop }
 
 startSlot :: Slot -> Tx ()
-startSlot x = tell $ mempty { tTimeRange = Just $ mempty { trStart = x } }
+startSlot x = putpend $ mempty { tTimeRange = Just $ mempty { trStart = x } }
 
 startNow :: Tx Slot
 startNow = do
   now <- currentSlot
-  tell $ mempty { tTimeRange = Just $ mempty { trStart = now } }
+  putpend $ mempty { tTimeRange = Just $ mempty { trStart = now } }
   pure now
 
 ttl :: Integer -> Tx ()
-ttl x = tell $ mempty { tTimeRange = Just $ mempty { trEnd = Just x } }
+ttl x = putpend $ mempty { tTimeRange = Just $ mempty { trEnd = Just x } }
 
 ttlFromNow :: Integer -> Tx ()
 ttlFromNow elapsedAmount = do
   _ <- startNow
   ttl elapsedAmount
 
+changeAddress :: Address -> Tx ()
+changeAddress addr = putpend $ mempty { tChangeAddress = pure addr }
+
 input :: UTxO -> Tx ()
-input x = tell $ mempty { tInputs = [Input x Nothing] }
+input x = putpend $ mempty { tInputs = [Input x Nothing] }
 
 scriptInput
   :: (A.ToData d, A.ToData r)
@@ -225,7 +236,7 @@ scriptInput
   -> r
   -- ^ Redeemer
   -> Tx ()
-scriptInput utxo scriptFile datum redeemer = tell $ mempty {
+scriptInput utxo scriptFile datum redeemer = putpend $ mempty {
     tInputs = pure $ Input utxo $ Just $ ScriptInfo
       { siDatum     = toCliJson datum
       , siRedeemer  = toCliJson redeemer
@@ -238,6 +249,9 @@ toCliJson
   = S.scriptDataToJson S.ScriptDataJsonDetailedSchema
   . S.fromPlutusData
   . A.toData
+
+parseValue :: String -> Maybe Value
+parseValue = parseValue' . words
 
 parseValue' :: [String] -> Maybe Value
 parseValue' xs = case xs of
@@ -252,7 +266,7 @@ parseUTxOLine :: String -> Maybe UTxO
 parseUTxOLine line = case words line of
   utxoTx:utxoIndex:rest -> do
     utxoValue <- parseValue' rest
-    utxoDatumHash <- parseDatumHash rest
+    let utxoDatumHash = parseDatumHash rest
     pure UTxO {..}
   _ -> Nothing
 
@@ -298,7 +312,7 @@ findScriptInputs
   -> Tx [UTxO]
 findScriptInputs address datumHash = do
   testnetConfig <- getTestnetConfig
-  liftIO $ filter ((==datumHash) . utxoDatumHash) <$> queryUtxos address testnetConfig
+  liftIO $ filter ((==Just datumHash) . utxoDatumHash) <$> queryUtxos address testnetConfig
 
 hashScript :: FilePath -> IO Address
 hashScript plutusFile = readFile $ replaceExtension plutusFile "addr"
@@ -337,6 +351,11 @@ firstScriptInput scriptFile datum redeemer = do
     findScriptInputs scriptAddress datumHash
   scriptInput utxo scriptFile datum redeemer
 
+splitNonAdaAssets :: Value -> (Value, Value)
+splitNonAdaAssets (Value m)
+  = ( Value $ maybe mempty (M.singleton "") $ M.lookup "" m
+    , Value $ M.delete "" m
+    )
 
 -- Look up the input.
 -- Merge the inputs.
@@ -344,14 +363,28 @@ firstScriptInput scriptFile datum redeemer = do
 -- diff the inputs from the outputs.
 balanceNonAdaAssets :: Address
                     -- ^ Change address
-                    -> Tx ()
+                    -> Tx (Maybe Output)
 balanceNonAdaAssets addr = do
   TransactionBuilder {..} <- getTransactionBuilder
   let
     inputValue = mconcat $ map (utxoValue . iUtxo) tInputs
     outputValue = mconcat $ map oValue tOutputs
     theDiffValue = inputValue `diffValues` outputValue
-  output addr theDiffValue
+
+    -- Make sure there are non-ada assets in there
+    (Value ada, Value nonAda) = splitNonAdaAssets theDiffValue
+  if nonAda == mempty then pure Nothing else do
+    -- add them with the minimum Ada
+    let
+      adaAmount = fromMaybe 0
+                $ M.lookup ""
+                $ fromMaybe mempty
+                $ M.lookup "" ada
+
+      minAdaAmount = min (3_000_000) adaAmount
+      withExtraAda = Value $ M.insert "" (M.singleton "" minAdaAmount) nonAda
+
+    Just <$> output addr withExtraAda
 
 
 
@@ -365,6 +398,8 @@ selectInputs outputValue address = do
   -- lookup inputs for the address
   testnetConfig <- ask
   inputs <- map inputFromUTxO <$> liftIO (queryUtxos address testnetConfig)
+
+  putpend $ mempty { tInputs = inputs }
   -- Merge the utxos values
   let mergeInputValue = mconcat $ map (utxoValue . iUtxo) inputs
   -- return the inputs and the remaining outputs
@@ -390,7 +425,7 @@ selectInputsAndBalance outputValue addr balanceAddr = do
     combinedInput = mconcat $ map (utxoValue . iUtxo) inputs
     change = combinedInput `diffValues` covered
 
-  output balanceAddr change
+  _ <- output balanceAddr change
   pure (inputs, remaining)
 
 -- Same as above but self balances
@@ -435,8 +470,11 @@ currentSlot = do
 
 output :: Address
        -> Value
-       -> Tx ()
-output a v = tell $ mempty { tOutputs = [Output a v Nothing] }
+       -> Tx Output
+output a v = do
+  let out = Output a v Nothing
+  putpend $ mempty { tOutputs = [out] }
+  pure out
 
 outputWithHash
           :: A.ToData d
@@ -447,7 +485,7 @@ outputWithHash
 outputWithHash a v d = do
   mTestnet <- ask
   datumHash <- liftIO $ hashDatum mTestnet $ toCliJson d
-  tell $
+  putpend $
     mempty
       { tOutputs = [Output a v $ Just $ DatumInfo datumHash Nothing] }
 
@@ -461,7 +499,7 @@ outputWithDatum a v d = do
   mTestnet <- ask
   let datumValue = toCliJson d
   datumHash <- liftIO $ hashDatum mTestnet datumValue
-  tell $ mempty
+  putpend $ mempty
     { tOutputs = [Output a v $ Just $ DatumInfo datumHash (Just datumValue) ] }
 
 -- Get all of the utxos
@@ -487,7 +525,7 @@ waitForNextBlock = do
 toTestnetFlag :: Maybe Integer -> String
 toTestnetFlag = \case
   Nothing -> "--mainnet"
-  Just x  -> "--testnet " <> show x
+  Just x  -> "--testnet-magic " <> show x
 
 toInputFlag :: Input -> String
 toInputFlag Input {iUtxo = UTxO {..}}
@@ -506,7 +544,7 @@ valueToOutput :: Value -> String
 valueToOutput
   = unwords
   . concatMap
-      (\(p, t, v) -> ["+", show v, p <> "." <> t])
+      (\(p, t, v) -> ["+", show v, if p == "" then "lovelace" else p <> "." <> t])
   . flattenValue
 
 pprJson :: Aeson.Value -> String
@@ -524,12 +562,15 @@ datumToOutput = \case
 
 outputsToFlag :: Output -> [String]
 outputsToFlag Output {..}
-  = [ "--tx-out "
-    <> oAddress
-    <> " "
-    <> valueToOutput oValue
-    ]
-  <> datumToOutput oDatumInfo
+  | oValue == mempty = []
+  | otherwise
+    = [ "--tx-out '"
+      <> oAddress
+      <> " "
+      <> valueToOutput oValue
+      <> "'"
+      ]
+    <> datumToOutput oDatumInfo
 
 outputsToFlags :: [Output] -> [String]
 outputsToFlags = concatMap outputsToFlag
@@ -543,7 +584,9 @@ signersToRequiredSignerFlags :: [FilePath] -> [String]
 signersToRequiredSignerFlags signers = map ("--required-signer " <>) signers
 
 toMintFlags :: Value -> [String]
-toMintFlags v = ["--mint " <> pprValue v]
+toMintFlags v
+  | v == mempty = []
+  | otherwise = ["--mint " <> pprValue v]
 
 toTimeRangeFlags :: Maybe TimeRange -> [String]
 toTimeRangeFlags = \case
@@ -589,10 +632,32 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..}
 
 eval :: Maybe Integer -> Tx () -> IO ()
 eval mTestnet (Tx m)= withSystemTempDirectory "tx-builder" $ \tempDir -> do
-  txBuilder <- execWriterT (runReaderT m mTestnet)
+  txBuilder <- execStateT (runReaderT m mTestnet) mempty
 
   let
-    flags = transactionBuilderToSignFlags tempDir mTestnet txBuilder
+    bodyFlags = transactionBuilderToBuildFlags tempDir mTestnet txBuilder
+    cmd = "cardano-cli " <> unwords bodyFlags
 
-  exitCode <- system $ "cardano-cli " <> unwords flags
+  putStrLn $ "cmd " <> cmd
+
+  exitCode <- system cmd
   unless (exitCode == ExitSuccess) $ throwIO exitCode
+
+  let
+    signFlags = transactionBuilderToSignFlags tempDir mTestnet txBuilder
+
+    cmd' = "cardano-cli " <> unwords signFlags
+
+  putStrLn $ "cmd " <> cmd'
+  exitCode' <- system cmd'
+  unless (exitCode' == ExitSuccess) $ throwIO exitCode'
+
+  let
+    submitCmd = "cardano-cli transaction submit "
+              <> toTestnetFlag mTestnet
+              <> " --tx-file "
+              <> (tempDir </> "signed-body.txt")
+
+  putStrLn $ "cmd " <> submitCmd
+  exitCode'' <- system submitCmd
+  unless (exitCode' == ExitSuccess) $ throwIO exitCode''
