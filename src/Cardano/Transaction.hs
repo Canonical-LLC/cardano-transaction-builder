@@ -511,10 +511,9 @@ account address = do
   pure $ mconcat $ map utxoValue utxos
 
 
-waitForNextBlock :: Tx ()
-waitForNextBlock = do
-  mTestnet <- ask
-  start <- currentSlot
+waitForNextBlock :: Maybe Integer -> IO ()
+waitForNextBlock mTestnet = do
+  start <- currentSlotIO mTestnet
   liftIO $ fix $ \next -> do
     threadDelay 1_000_000
     nextSlot <- currentSlotIO mTestnet
