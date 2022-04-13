@@ -659,4 +659,4 @@ eval mTestnet (Tx m)= withSystemTempDirectory "tx-builder" $ \tempDir -> do
 
   putStrLn $ "cmd " <> submitCmd
   exitCode'' <- system submitCmd
-  unless (exitCode' == ExitSuccess) $ throwIO exitCode''
+  unless (exitCode'' == ExitSuccess) $ throwIO exitCode''
