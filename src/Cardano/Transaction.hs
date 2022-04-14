@@ -597,7 +597,7 @@ toTimeRangeFlags = \case
         Just e -> ["--invalid-hereafter " <> show e]
 
 toProtocolParams :: Maybe FilePath -> [String]
-toProtocolParams = maybe [] (("--protocol-params":) . pure)
+toProtocolParams = maybe [] (("--protocol-params-file":) . pure)
 
 toBodyFlags :: FilePath -> [String]
 toBodyFlags tmpDir = ["--out-file " <> (tmpDir </> "body.txt")]
