@@ -596,13 +596,17 @@ toTimeRangeFlags = \case
         Nothing -> []
         Just e -> ["--invalid-hereafter " <> show e]
 
+toProtocolParams :: Maybe FilePath -> [String]
+toProtocolParams = maybe [] (("--protocol-params":) . pure)
+
 toBodyFlags :: FilePath -> [String]
 toBodyFlags tmpDir = ["--out-file " <> (tmpDir </> "body.txt")]
 
-transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> TransactionBuilder -> [String]
-transactionBuilderToBuildFlags tmpDir testnet TransactionBuilder {..}
+transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> TransactionBuilder -> [String]
+transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder {..}
   =  ["transaction", "build", "--alonzo-era"]
   <> [toTestnetFlag testnet]
+  <> toProtocolParams protocolParams
   <> inputsToFlags tInputs
   <> outputsToFlags tOutputs
   <> changeAddressToFlag tChangeAddress
@@ -628,13 +632,12 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..}
   <> [toTestnetFlag testnet]
   <> toSignedTxFile tmpDir
 
-
-eval :: Maybe Integer -> Tx () -> IO ()
-eval mTestnet (Tx m)= withSystemTempDirectory "tx-builder" $ \tempDir -> do
+eval :: Maybe Integer -> Maybe FilePath -> Tx () -> IO ()
+eval mTestnet protocolParams (Tx m)= withSystemTempDirectory "tx-builder" $ \tempDir -> do
   txBuilder <- execStateT (runReaderT m mTestnet) mempty
 
   let
-    bodyFlags = transactionBuilderToBuildFlags tempDir mTestnet txBuilder
+    bodyFlags = transactionBuilderToBuildFlags tempDir mTestnet protocolParams txBuilder
     cmd = "cardano-cli " <> unwords bodyFlags
 
   putStrLn $ "cmd " <> cmd
