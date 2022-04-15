@@ -92,7 +92,7 @@ pprPolicyTokens policyId tokenMap = if policyId == ""
 
 pprValue :: Value -> String
 pprValue
-  = intercalate " + "
+  = (\case [i] -> i; xs -> intercalate " + " xs)
   . concatMap (uncurry pprPolicyTokens)
   . M.toList
   . unValue
