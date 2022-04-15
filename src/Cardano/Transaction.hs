@@ -202,8 +202,8 @@ putpend tb = modify (<> tb)
 getTransactionBuilder :: Tx TransactionBuilder
 getTransactionBuilder = get
 
-mint :: Value -> FilePath -> Aeson.Value -> Tx ()
-mint v s r = putpend $ mempty { tMint = pure $ Mint v s r}
+mint :: Aeson.ToJSON a => Value -> FilePath -> a -> Tx ()
+mint v s r = putpend $ mempty { tMint = pure . Mint v s . Aeson.toJSON $ r}
 
 sign :: FilePath -> Tx ()
 sign x = putpend $ mempty { tSignatures = [x] }
