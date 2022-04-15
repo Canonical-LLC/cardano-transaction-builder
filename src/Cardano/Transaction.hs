@@ -1,4 +1,7 @@
+{-# LANGUAGE NamedFieldPuns #-}
+
 module Cardano.Transaction where
+
 import qualified Data.Map.Strict as M
 import           Data.Map (Map)
 import           Control.Monad.State
@@ -146,14 +149,21 @@ instance Semigroup TimeRange where
         (Just  x, Just  y) -> Just $ max x y
     }
 
+data Mint = Mint
+  { mValue :: Value
+  , mScript :: FilePath
+  , mRedeemer :: Aeson.Value
+  } deriving (Show, Eq, Ord, Generic)
+
 data TransactionBuilder = TransactionBuilder
   { tInputs        :: [Input]
   , tOutputs       :: [Output]
-  , tMint          :: Value
+  , tMint          :: [Mint]
   , tTimeRange     :: Maybe TimeRange
   , tSignatures    :: [FilePath]
   , tMetadata      :: ByteString
   , tChangeAddress :: Last Address
+  , tCollateral    :: Last UTxO
   } deriving (Show, Eq, Ord, Generic)
 
 instance Semigroup TransactionBuilder where
@@ -165,6 +175,7 @@ instance Semigroup TransactionBuilder where
     , tSignatures    = tSignatures x <> tSignatures y
     , tMetadata      = tMetadata   x <> tMetadata   y
     , tChangeAddress = tChangeAddress  x <> tChangeAddress    y
+    , tCollateral    = tCollateral x <> tCollateral y
     }
 
 instance Monoid TransactionBuilder where
@@ -176,6 +187,7 @@ instance Monoid TransactionBuilder where
     , tSignatures    = mempty
     , tMetadata      = mempty
     , tChangeAddress = mempty
+    , tCollateral    = mempty
     }
 
 newtype Tx a = Tx { unTx :: ReaderT (Maybe Integer) (StateT TransactionBuilder IO) a }
@@ -190,8 +202,8 @@ putpend tb = modify (<> tb)
 getTransactionBuilder :: Tx TransactionBuilder
 getTransactionBuilder = get
 
-mint :: Value -> Tx ()
-mint v = putpend $ mempty { tMint = v }
+mint :: Value -> FilePath -> Aeson.Value -> Tx ()
+mint v s r = putpend $ mempty { tMint = pure $ Mint v s r}
 
 sign :: FilePath -> Tx ()
 sign x = putpend $ mempty { tSignatures = [x] }
@@ -221,6 +233,9 @@ ttlFromNow elapsedAmount = do
 
 changeAddress :: Address -> Tx ()
 changeAddress addr = putpend $ mempty { tChangeAddress = pure addr }
+
+collateral :: UTxO -> Tx ()
+collateral utxo = putpend $ mempty { tCollateral = pure utxo }
 
 input :: UTxO -> Tx ()
 input x = putpend $ mempty { tInputs = [Input x Nothing] }
@@ -527,11 +542,10 @@ toTestnetFlag = \case
   Just x  -> "--testnet-magic " <> show x
 
 toInputFlag :: Input -> String
-toInputFlag Input {iUtxo = UTxO {..}}
-  =  "--tx-in "
-  <> utxoTx
-  <> "#"
-  <> utxoIndex
+toInputFlag Input {iUtxo} =  "--tx-in " <> pprUtxo iUtxo
+
+pprUtxo :: UTxO -> String
+pprUtxo UTxO{..} = utxoTx <> "#" <> utxoIndex
 
 inputsToFlags :: [Input] -> [String]
 inputsToFlags = map toInputFlag
@@ -579,13 +593,28 @@ changeAddressToFlag = \case
   Last Nothing -> error "Missing change address!"
   Last (Just a) -> ["--change-address " <> a]
 
+collateralToFlags :: Last UTxO -> [String]
+collateralToFlags = \case
+  Last Nothing -> []
+  Last (Just utxo) -> [ "--tx-in-collateral", pprUtxo utxo]
+
 signersToRequiredSignerFlags :: [FilePath] -> [String]
 signersToRequiredSignerFlags signers = map ("--required-signer " <>) signers
 
-toMintFlags :: Value -> [String]
-toMintFlags v
-  | v == mempty = []
-  | otherwise = ["--mint " <> pprValue v]
+toMintFlags :: Mint -> [String]
+toMintFlags Mint{..}
+  | mValue == mempty = []
+  | otherwise =
+    [ "--mint"
+    , pprValue mValue
+    , "--minting-script-file"
+    , mScript
+    , "--mint-redeemer-value"
+    , pprJson mRedeemer
+    ]
+
+mintsToFlags :: [Mint] -> [String]
+mintsToFlags = concatMap toMintFlags
 
 toTimeRangeFlags :: Maybe TimeRange -> [String]
 toTimeRangeFlags = \case
@@ -608,10 +637,11 @@ transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder 
   <> [toTestnetFlag testnet]
   <> toProtocolParams protocolParams
   <> inputsToFlags tInputs
+  <> collateralToFlags tCollateral
   <> outputsToFlags tOutputs
   <> changeAddressToFlag tChangeAddress
   <> signersToRequiredSignerFlags tSignatures
-  <> toMintFlags tMint
+  <> mintsToFlags tMint
   <> toTimeRangeFlags tTimeRange
   <> toBodyFlags tmpDir
 
