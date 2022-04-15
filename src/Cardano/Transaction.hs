@@ -704,7 +704,7 @@ eval mTestnet protocolParams (Tx m)= withSystemTempDirectory "tx-builder" $ \tem
     submitFlags = mconcat
       [ [ "transaction", "submit" ]
       , toTestnetFlags mTestnet
-      , [" --tx-file ", tempDir </> "signed-body.txt"]
+      , ["--tx-file", tempDir </> "signed-body.txt"]
       ]
 
   putStrLn $ "cmd " <> "cardano-cli" <> unwords submitFlags
