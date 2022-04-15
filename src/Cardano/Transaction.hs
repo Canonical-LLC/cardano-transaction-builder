@@ -628,9 +628,9 @@ toMintFlags :: Mint -> [String]
 toMintFlags Mint{..}
   | mValue == mempty = []
   | otherwise =
-    [ "--mint"
+    [ "--mint '"
     , pprValue mValue
-    , "--minting-script-file"
+    , "' --minting-script-file"
     , mScript
     , "--mint-redeemer-value"
     , pprJson mRedeemer
