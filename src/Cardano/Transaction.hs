@@ -14,7 +14,8 @@ import qualified Data.Aeson as Aeson
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
-import           Data.List (intercalate)
+import           Data.Function (on)
+import           Data.List (intercalate, maximumBy)
 import           Control.Exception
 import           Text.Read (readMaybe)
 import           Control.Concurrent
@@ -458,6 +459,25 @@ selectAllInputsAndSelfBalance addr = do
   TransactionBuilder {..} <- getTransactionBuilder
   let combinedOutput = mconcat $ map oValue tOutputs
   selectInputsSelfBalance combinedOutput addr
+
+-- Select an input to use as collateral
+selectCollateralInput :: Address -> Tx (Input, Value)
+selectCollateralInput addr = do
+  -- lookup inputs for the address
+  testnetConfig <- ask
+  inputs <- map inputFromUTxO <$> liftIO (queryUtxos addr testnetConfig)
+  let lovelaces :: Input -> Integer
+      lovelaces = fromMaybe 0 . M.lookup "" . fromMaybe mempty . M.lookup "" . unValue . utxoValue . iUtxo
+  let i@Input {..} = maximumBy (compare `on` lovelaces) inputs
+
+  putpend $ mempty
+    { tInputs = [i]
+    , tCollateral = pure iUtxo
+    }
+
+  pure (i, utxoValue iUtxo)
+
+
 
 currentSlotIO :: Maybe Integer -> IO Slot
 currentSlotIO mTestnet = do
