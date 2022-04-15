@@ -549,9 +549,12 @@ account address = do
 waitForNextBlock :: Maybe Integer -> IO ()
 waitForNextBlock mTestnet = do
   start <- currentSlotIO mTestnet
+  putStrLn . mconcat $ [ "start slot is: ", show start ]
   liftIO $ fix $ \next -> do
+    putStrLn "waiting 1s"
     threadDelay 1_000_000
     nextSlot <- currentSlotIO mTestnet
+    putStrLn . mconcat $ [ "current slot is: ", show nextSlot ]
     when (start == nextSlot) next
 
 ----
