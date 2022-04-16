@@ -571,7 +571,7 @@ toScriptFlags ScriptInfo{..} = do
 
   (redeemerFile, rfh) <- managedSystemTempFile "redeemer.json"
   liftIO $ do
-    BSL.hPutStr rfh . Aeson.encode $ siDatum
+    BSL.hPutStr rfh . Aeson.encode $ siRedeemer
     hClose rfh
 
   pure
