@@ -4,6 +4,7 @@ module Cardano.Transaction where
 
 import qualified Data.Map.Strict as M
 import           Data.Map (Map)
+import           Control.Monad.Managed
 import           Control.Monad.State
 import           Control.Monad.Reader
 import           Data.Foldable (toList)
@@ -559,26 +560,32 @@ toTestnetFlags = \case
   Nothing -> ["--mainnet"]
   Just x  -> ["--testnet-magic", show x]
 
-toInputFlags :: Input -> [String]
-toInputFlags Input {..}
-  = mappend ["--tx-in", pprUtxo iUtxo]
-  . (>>= \ScriptInfo{..} ->
-    [ "--tx-in-script-file"
-    , siScript
-    , "--tx-in-datum-value"
-    , pprJson siDatum
-    , "--tx-in-redeemer-value"
-    , pprJson siRedeemer
-    ]
-  )
-  . toList
-  $ iScriptInfo
+withSystemTempFile' :: String -> (FilePath -> IO a) -> IO a
+withSystemTempFile' n f = withSystemTempFile n $ \fp fh -> do
+  hClose fh
+  f fp
+
+toInputFlags :: Input -> Managed [String]
+toInputFlags Input {..} = do
+ datumFile <-  managed (withSystemTempFile' "datum.json")
+ pure . mappend ["--tx-in", pprUtxo iUtxo]
+    . (>>= \ScriptInfo{..} ->
+      [ "--tx-in-script-file"
+      , siScript
+      , "--tx-in-datum-file"
+      , datumFile
+      , "--tx-in-redeemer-value"
+      , pprJson siRedeemer
+      ]
+    )
+    . toList
+    $ iScriptInfo
 
 pprUtxo :: UTxO -> String
 pprUtxo UTxO{..} = utxoTx <> "#" <> utxoIndex
 
-inputsToFlags :: [Input] -> [String]
-inputsToFlags = concatMap toInputFlags
+inputsToFlags :: [Input] -> Managed [String]
+inputsToFlags = fmap mconcat . traverse toInputFlags
 
 flattenValue :: Value -> [(String, String, Integer)]
 flattenValue (Value m) =  concatMap (\(pId, t) -> map (\(tn, c) -> (pId, tn, c)) $ M.toList t) $ M.toList m
@@ -658,20 +665,22 @@ toProtocolParams = maybe [] (("--protocol-params-file":) . pure)
 toBodyFlags :: FilePath -> [String]
 toBodyFlags tmpDir = ["--out-file", tmpDir </> "body.txt"]
 
-transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> TransactionBuilder -> [String]
-transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder {..} = mconcat
-  [ ["transaction", "build", "--alonzo-era"]
-  , toTestnetFlags testnet
-  , toProtocolParams protocolParams
-  , inputsToFlags tInputs
-  , collateralToFlags tCollateral
-  , outputsToFlags tOutputs
-  , changeAddressToFlag tChangeAddress
-  , signersToRequiredSignerFlags tSignatures
-  , mintsToFlags tMint
-  , toTimeRangeFlags tTimeRange
-  , toBodyFlags tmpDir
-  ]
+transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> TransactionBuilder -> Managed [String]
+transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder {..} = do
+  inputs <- inputsToFlags tInputs
+  pure . mconcat $
+    [ ["transaction", "build", "--alonzo-era"]
+    , toTestnetFlags testnet
+    , toProtocolParams protocolParams
+    , inputs
+    , collateralToFlags tCollateral
+    , outputsToFlags tOutputs
+    , changeAddressToFlag tChangeAddress
+    , signersToRequiredSignerFlags tSignatures
+    , mintsToFlags tMint
+    , toTimeRangeFlags tTimeRange
+    , toBodyFlags tmpDir
+    ]
 
 toSigningBodyFlags :: FilePath -> [String]
 toSigningBodyFlags tmpDir = ["--tx-body-file", tmpDir </> "body.txt"]
@@ -692,28 +701,28 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..} = mconcat
   ]
 
 eval :: Maybe Integer -> Maybe FilePath -> Tx () -> IO ()
-eval mTestnet protocolParams (Tx m)= withSystemTempDirectory "tx-builder" $ \tempDir -> do
-  txBuilder <- execStateT (runReaderT m mTestnet) mempty
+eval mTestnet protocolParams (Tx m) = runManaged $ do
+  tempDir <- managed (withSystemTempDirectory "tx-builder")
+  txBuilder <- liftIO . execStateT (runReaderT m mTestnet) $ mempty
+  bodyFlags <- transactionBuilderToBuildFlags tempDir mTestnet protocolParams txBuilder
 
-  let
-    bodyFlags = transactionBuilderToBuildFlags tempDir mTestnet protocolParams txBuilder
+  liftIO $ do
+    putStrLn $ "cmd " <> "cardano-cli " <> unwords bodyFlags
 
-  putStrLn $ "cmd " <> "cardano-cli " <> unwords bodyFlags
+    callProcess "cardano-cli" bodyFlags
 
-  callProcess "cardano-cli" bodyFlags
+    let
+      signFlags = transactionBuilderToSignFlags tempDir mTestnet txBuilder
 
-  let
-    signFlags = transactionBuilderToSignFlags tempDir mTestnet txBuilder
+    putStrLn $ "cmd " <> "cardano-cli " <> unwords signFlags
+    callProcess "cardano-cli" signFlags
 
-  putStrLn $ "cmd " <> "cardano-cli " <> unwords signFlags
-  callProcess "cardano-cli" signFlags
+    let
+      submitFlags = mconcat
+        [ [ "transaction", "submit" ]
+        , toTestnetFlags mTestnet
+        , ["--tx-file", tempDir </> "signed-body.txt"]
+        ]
 
-  let
-    submitFlags = mconcat
-      [ [ "transaction", "submit" ]
-      , toTestnetFlags mTestnet
-      , ["--tx-file", tempDir </> "signed-body.txt"]
-      ]
-
-  putStrLn $ "cmd " <> "cardano-cli " <> unwords submitFlags
-  callProcess "cardano-cli" submitFlags
+    putStrLn $ "cmd " <> "cardano-cli " <> unwords submitFlags
+    callProcess "cardano-cli" submitFlags

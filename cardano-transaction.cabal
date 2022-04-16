@@ -34,6 +34,7 @@ library
       , containers
       , cardano-api
       , extra
+      , managed
       , plutus-ledger-api
       , aeson
       , bytestring
