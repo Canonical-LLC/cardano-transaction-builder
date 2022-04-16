@@ -467,10 +467,7 @@ selectCollateralInput addr = do
       lovelaces = fromMaybe 0 . M.lookup "" . fromMaybe mempty . M.lookup "" . unValue . utxoValue . iUtxo
   let i@Input {..} = maximumBy (compare `on` lovelaces) inputs
 
-  putpend $ mempty
-    { tInputs = [i]
-    , tCollateral = pure iUtxo
-    }
+  collateral iUtxo
 
   pure (i, utxoValue iUtxo)
 
