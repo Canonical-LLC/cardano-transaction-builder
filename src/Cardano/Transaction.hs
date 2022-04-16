@@ -564,17 +564,23 @@ managedSystemTempFile n = managed (withSystemTempFile n . curry)
 
 toScriptFlags :: ScriptInfo -> Managed [String]
 toScriptFlags ScriptInfo{..} = do
-  (datumFile, fh) <-  managedSystemTempFile "datum.json"
+  (datumFile, dfh) <-  managedSystemTempFile "datum.json"
   liftIO $ do
-    BSL.hPutStr fh . Aeson.encode $ siDatum
-    hClose fh
+    BSL.hPutStr dfh . Aeson.encode $ siDatum
+    hClose dfh
+
+  (redeemerFile, rfh) <- managedSystemTempFile "redeemer.json"
+  liftIO $ do
+    BSL.hPutStr rfh . Aeson.encode $ siDatum
+    hClose rfh
+
   pure
     [ "--tx-in-script-file"
     , siScript
     , "--tx-in-datum-file"
     , datumFile
-    , "--tx-in-redeemer-value"
-    , pprJson siRedeemer
+    , "--tx-in-redeemer-file"
+    , redeemerFile
     ]
 
 toInputFlags :: Input -> Managed [String]
