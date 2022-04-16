@@ -657,10 +657,10 @@ toTimeRangeFlags :: Maybe TimeRange -> [String]
 toTimeRangeFlags = \case
   Nothing -> []
   Just TimeRange {..}
-    -> ["--invalid-before ", show trStart]
+    -> ["--invalid-before", show trStart]
     ++ case trEnd of
         Nothing -> []
-        Just e -> ["--invalid-hereafter ", show e]
+        Just e -> ["--invalid-hereafter", show e]
 
 toProtocolParams :: Maybe FilePath -> [String]
 toProtocolParams = maybe [] (("--protocol-params-file":) . pure)
