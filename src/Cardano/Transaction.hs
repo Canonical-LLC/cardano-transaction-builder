@@ -6,6 +6,7 @@ import qualified Data.Map.Strict as M
 import           Data.Map (Map)
 import           Control.Monad.State
 import           Control.Monad.Reader
+import           Data.Foldable (toList)
 import           Data.Monoid
 import           System.Process
 import qualified Plutus.V1.Ledger.Api as A
@@ -559,7 +560,19 @@ toTestnetFlags = \case
   Just x  -> ["--testnet-magic", show x]
 
 toInputFlags :: Input -> [String]
-toInputFlags Input {iUtxo} =  ["--tx-in", pprUtxo iUtxo]
+toInputFlags Input {..}
+  = mappend ["--tx-in", pprUtxo iUtxo]
+  . (>>= \ScriptInfo{..} ->
+    [ "--tx-in-script-file"
+    , siScript
+    , "--tx-in-datum-value"
+    , pprJson siDatum
+    , "--tx-in-redeemer-value"
+    , pprJson siRedeemer
+    ]
+  )
+  . toList
+  $ iScriptInfo
 
 pprUtxo :: UTxO -> String
 pprUtxo UTxO{..} = utxoTx <> "#" <> utxoIndex
