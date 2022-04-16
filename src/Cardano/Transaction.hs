@@ -7,7 +7,6 @@ import           Data.Map (Map)
 import           Control.Monad.Managed
 import           Control.Monad.State
 import           Control.Monad.Reader
-import           Data.Foldable (toList)
 import           Data.Monoid
 import           System.Process
 import qualified Plutus.V1.Ledger.Api as A
@@ -338,8 +337,8 @@ hashScript plutusFile = readFile $ replaceExtension plutusFile "addr"
 -- TODO use the
 hashDatum :: Aeson.Value -> IO String
 hashDatum value = withSystemTempFile "datum" $ \datumFile fh -> do
+  BSL.hPutStr fh $ Aeson.encode value
   hClose fh
-  BSL.writeFile datumFile $ Aeson.encode value
   trim <$> readProcess
       "cardano-cli"
       [ "transaction"
@@ -560,26 +559,27 @@ toTestnetFlags = \case
   Nothing -> ["--mainnet"]
   Just x  -> ["--testnet-magic", show x]
 
-withSystemTempFile' :: String -> (FilePath -> IO a) -> IO a
-withSystemTempFile' n f = withSystemTempFile n $ \fp fh -> do
-  hClose fh
-  f fp
+managedSystemTempFile :: String -> Managed (FilePath, Handle)
+managedSystemTempFile n = managed (withSystemTempFile n . curry)
+
+toScriptFlags :: ScriptInfo -> Managed [String]
+toScriptFlags ScriptInfo{..} = do
+  (datumFile, fh) <-  managedSystemTempFile "datum.json"
+  liftIO $ do
+    BSL.hPutStr fh . Aeson.encode $ siDatum
+    hClose fh
+  pure
+    [ "--tx-in-script-file"
+    , siScript
+    , "--tx-in-datum-file"
+    , datumFile
+    , "--tx-in-redeemer-value"
+    , pprJson siRedeemer
+    ]
 
 toInputFlags :: Input -> Managed [String]
-toInputFlags Input {..} = do
- datumFile <-  managed (withSystemTempFile' "datum.json")
- pure . mappend ["--tx-in", pprUtxo iUtxo]
-    . (>>= \ScriptInfo{..} ->
-      [ "--tx-in-script-file"
-      , siScript
-      , "--tx-in-datum-file"
-      , datumFile
-      , "--tx-in-redeemer-value"
-      , pprJson siRedeemer
-      ]
-    )
-    . toList
-    $ iScriptInfo
+toInputFlags Input {..} =
+  mappend ["--tx-in", pprUtxo iUtxo] <$> maybe (pure []) toScriptFlags iScriptInfo
 
 pprUtxo :: UTxO -> String
 pprUtxo UTxO{..} = utxoTx <> "#" <> utxoIndex
