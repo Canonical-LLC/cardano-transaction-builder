@@ -16,6 +16,7 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.Function (on)
 import           Data.List (intercalate, maximumBy)
+import           Data.List.Extra (trim)
 import           Control.Exception
 import           Text.Read (readMaybe)
 import           Control.Concurrent
@@ -27,6 +28,7 @@ import           Data.Maybe
 import           System.FilePath.Posix
 import           GHC.Generics
 import           Data.String
+import           System.IO
 
 
 
@@ -335,18 +337,17 @@ hashScript plutusFile = readFile $ replaceExtension plutusFile "addr"
 -- Write datum to a temporary file
 -- cardano-cli transaction hash-script-data --script-data-file
 -- TODO use the
-hashDatum :: Maybe Integer -> Aeson.Value -> IO String
-hashDatum mTestnet value = withSystemTempFile "datum" $ \datumFile _ -> do
+hashDatum :: Aeson.Value -> IO String
+hashDatum value = withSystemTempFile "datum" $ \datumFile fh -> do
+  hClose fh
   BSL.writeFile datumFile $ Aeson.encode value
-  readProcess
+  trim <$> readProcess
       "cardano-cli"
-      ( [ "transaction"
-        , "hash-script-data"
-        , "--script-data-file"
-        , datumFile
-        ] <>
-        maybe ["--mainnet"] (\x -> ["--testnet-magic", show x]) mTestnet
-      )
+      [ "transaction"
+      , "hash-script-data"
+      , "--script-data-file"
+      , datumFile
+      ]
       ""
 
 firstScriptInput
@@ -359,9 +360,8 @@ firstScriptInput
   -- ^ Redeemer
   -> Tx ()
 firstScriptInput scriptFile datum redeemer = do
-  mTestnet <- ask
   scriptAddress <- liftIO $ hashScript scriptFile
-  datumHash <- liftIO $ hashDatum mTestnet $ toCliJson datum
+  datumHash <- liftIO $ hashDatum $ toCliJson datum
   utxo <- liftIO . maybe (throwIO $ userError "firstScriptInput: no utxos") pure . listToMaybe =<<
     findScriptInputs scriptAddress datumHash
   scriptInput utxo scriptFile datum redeemer
@@ -517,8 +517,7 @@ outputWithHash
           -> d
           -> Tx ()
 outputWithHash a v d = do
-  mTestnet <- ask
-  datumHash <- liftIO $ hashDatum mTestnet $ toCliJson d
+  datumHash <- liftIO $ hashDatum $ toCliJson d
   putpend $
     mempty
       { tOutputs = [Output a v $ Just $ DatumInfo datumHash Nothing] }
@@ -530,9 +529,8 @@ outputWithDatum
           -> d
           -> Tx ()
 outputWithDatum a v d = do
-  mTestnet <- ask
   let datumValue = toCliJson d
-  datumHash <- liftIO $ hashDatum mTestnet datumValue
+  datumHash <- liftIO $ hashDatum datumValue
   putpend $ mempty
     { tOutputs = [Output a v $ Just $ DatumInfo datumHash (Just datumValue) ] }
 
@@ -690,14 +688,14 @@ eval mTestnet protocolParams (Tx m)= withSystemTempDirectory "tx-builder" $ \tem
   let
     bodyFlags = transactionBuilderToBuildFlags tempDir mTestnet protocolParams txBuilder
 
-  putStrLn $ "cmd " <> "cardano-cli" <> unwords bodyFlags
+  putStrLn $ "cmd " <> "cardano-cli " <> unwords bodyFlags
 
   callProcess "cardano-cli" bodyFlags
 
   let
     signFlags = transactionBuilderToSignFlags tempDir mTestnet txBuilder
 
-  putStrLn $ "cmd " <> "cardano-cli" <> unwords signFlags
+  putStrLn $ "cmd " <> "cardano-cli " <> unwords signFlags
   callProcess "cardano-cli" signFlags
 
   let
@@ -707,5 +705,5 @@ eval mTestnet protocolParams (Tx m)= withSystemTempDirectory "tx-builder" $ \tem
       , ["--tx-file", tempDir </> "signed-body.txt"]
       ]
 
-  putStrLn $ "cmd " <> "cardano-cli" <> unwords submitFlags
+  putStrLn $ "cmd " <> "cardano-cli " <> unwords submitFlags
   callProcess "cardano-cli" submitFlags

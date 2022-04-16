@@ -33,6 +33,7 @@ library
       , mtl
       , containers
       , cardano-api
+      , extra
       , plutus-ledger-api
       , aeson
       , bytestring
