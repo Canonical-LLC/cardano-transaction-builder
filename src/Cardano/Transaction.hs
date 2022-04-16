@@ -30,8 +30,6 @@ import           GHC.Generics
 import           Data.String
 import           System.IO
 
-
-
 newtype Value = Value { unValue :: Map String (Map String Integer) }
   deriving (Show, Eq, Ord)
 type Address = String
@@ -278,7 +276,6 @@ parseValue' xs = case xs of
     pure $ Value $ M.insert "" (M.singleton "" lovelaces) initialValue
   _ -> Nothing
 
--- TODO parse datum hash
 parseUTxOLine :: String -> Maybe UTxO
 parseUTxOLine line = case words line of
   utxoTx:utxoIndex:rest -> do
@@ -289,7 +286,7 @@ parseUTxOLine line = case words line of
 
 parseDatumHash :: [String] -> Maybe String
 parseDatumHash xs = case reverse xs of
-  hash:"TxOutDatumHash":"+":_ -> Just hash
+  hash:_:"TxOutDatumHash":"+":_ -> Just . takeWhile (/= '"') . drop 1 $ hash
   _ -> Nothing
 
 parseNonNativeTokens :: [String] -> Maybe Value
