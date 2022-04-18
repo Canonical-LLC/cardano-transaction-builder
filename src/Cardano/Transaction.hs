@@ -8,7 +8,6 @@ import           Control.Monad.Managed
 import           Control.Monad.State
 import           Control.Monad.Reader
 import           Data.Monoid
-import           System.Process
 import qualified Plutus.V1.Ledger.Api as A
 import qualified Cardano.Api.Shelley as S
 import qualified Data.Aeson as Aeson
@@ -30,6 +29,8 @@ import           System.FilePath.Posix
 import           GHC.Generics
 import           Data.String
 import           System.IO
+import           System.Exit
+import           System.Process.Typed
 
 newtype Value = Value { unValue :: Map String (Map String Integer) }
   deriving (Show, Eq, Ord)
@@ -47,6 +48,11 @@ instance Monoid Value where
 
 instance Semigroup Value where
   Value x <> Value y = Value $ M.unionWith (M.unionWith (+)) x y
+
+data EvalException = EvalException String [String] String
+  deriving Show
+
+instance Exception EvalException
 
 diffTokenMap :: Map String Integer -> Map String Integer -> Maybe (Map String Integer)
 diffTokenMap x y =
@@ -308,18 +314,19 @@ parseNonNativeTokens = go mempty where
     _ -> Nothing
 
 queryUtxos :: Address -> Maybe Integer -> IO [UTxO]
-queryUtxos address mTestnet
-  = mapM (\line -> maybe (throwIO . userError $ "Failed to parse UTxO for line: " <> line) pure $ parseUTxOLine line) . drop 2 . lines
-  =<< readProcess
-      "cardano-cli"
-      ( [ "query"
-        , "utxo"
-        , "--address"
-        , address
-        ] <>
-        maybe ["--mainnet"] (\x -> ["--testnet-magic", show x]) mTestnet
-      )
-      ""
+queryUtxos address mTestnet =
+  let
+    p = proc "cardano-cli" $
+      [ "query"
+      , "utxo"
+      , "--address"
+      , address
+      ] <>
+      maybe ["--mainnet"] (\x -> ["--testnet-magic", show x]) mTestnet
+
+    parse = mapM (\line -> maybe (throwIO . userError $ "Failed to parse UTxO for line: " <> line) pure $ parseUTxOLine line) . drop 2 . lines . BSLC.unpack
+  in
+    parse =<< readProcessStdout_ p
 
 findScriptInputs
   :: Address
@@ -339,14 +346,12 @@ hashDatum :: Aeson.Value -> IO String
 hashDatum value = withSystemTempFile "datum" $ \datumFile fh -> do
   BSL.hPutStr fh $ Aeson.encode value
   hClose fh
-  trim <$> readProcess
-      "cardano-cli"
-      [ "transaction"
-      , "hash-script-data"
-      , "--script-data-file"
-      , datumFile
-      ]
-      ""
+  fmap (trim . BSLC.unpack) . readProcessStdout_ . proc "cardano-cli" $
+    [ "transaction"
+    , "hash-script-data"
+    , "--script-data-file"
+    , datumFile
+    ]
 
 firstScriptInput
   :: (A.ToData d, A.ToData r)
@@ -480,16 +485,13 @@ currentSlotIO mTestnet = do
          . L.preview (AL.key "slot" . AL._Number . L.to floor)
          )
           . (Aeson.eitherDecode :: BSL.ByteString -> Either String Aeson.Value)
-          . BSLC.pack
           =<< do
-    readProcess
-        "cardano-cli"
-        ( [ "query"
-          , "tip"
-          ] <>
-          maybe ["--mainnet"] (\x -> ["--testnet-magic", show x]) mTestnet
-        )
-        ""
+    readProcessStdout_ . proc "cardano-cli" $
+      [ "query"
+      , "tip"
+      ] <>
+      maybe ["--mainnet"] (\x -> ["--testnet-magic", show x]) mTestnet
+
 
 currentSlot :: Tx Slot
 currentSlot = do
@@ -704,28 +706,26 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..} = mconcat
   ]
 
 eval :: Maybe Integer -> Maybe FilePath -> Tx () -> IO ()
-eval mTestnet protocolParams (Tx m) = runManaged $ do
-  tempDir <- managed (withSystemTempDirectory "tx-builder")
-  txBuilder <- liftIO . execStateT (runReaderT m mTestnet) $ mempty
-  bodyFlags <- transactionBuilderToBuildFlags tempDir mTestnet protocolParams txBuilder
+eval mTestnet protocolParams (Tx m) =
+  let
+    runCardanoCli args = do
+      (exitCode, outStr) <- readProcessInterleaved . proc "cardano-cli" $ args
+      case exitCode of
+        ExitSuccess -> pure ()
+        ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
 
-  liftIO $ do
-    putStrLn $ "cmd " <> "cardano-cli " <> unwords bodyFlags
+  in runManaged $ do
+    tempDir <- managed (withSystemTempDirectory "tx-builder")
+    txBuilder <- liftIO . execStateT (runReaderT m mTestnet) $ mempty
+    bodyFlags <- transactionBuilderToBuildFlags tempDir mTestnet protocolParams txBuilder
 
-    callProcess "cardano-cli" bodyFlags
+    liftIO $ do
+      runCardanoCli bodyFlags
 
-    let
-      signFlags = transactionBuilderToSignFlags tempDir mTestnet txBuilder
+      runCardanoCli . transactionBuilderToSignFlags tempDir mTestnet $ txBuilder
 
-    putStrLn $ "cmd " <> "cardano-cli " <> unwords signFlags
-    callProcess "cardano-cli" signFlags
-
-    let
-      submitFlags = mconcat
+      runCardanoCli . mconcat $
         [ [ "transaction", "submit" ]
         , toTestnetFlags mTestnet
         , ["--tx-file", tempDir </> "signed-body.txt"]
         ]
-
-    putStrLn $ "cmd " <> "cardano-cli " <> unwords submitFlags
-    callProcess "cardano-cli" submitFlags
