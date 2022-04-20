@@ -31,6 +31,7 @@ import           Data.String
 import           System.IO
 import           System.Exit
 import           System.Process.Typed
+import           Control.Applicative
 
 newtype Value = Value { unValue :: Map String (Map String Integer) }
   deriving (Show, Eq, Ord)
@@ -705,8 +706,24 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..} = mconcat
   , toSignedTxFiles tmpDir
   ]
 
-eval :: Maybe Integer -> Maybe FilePath -> Tx () -> IO ()
-eval mTestnet protocolParams (Tx m) =
+data EvalConfig = EvalConfig
+  { ecOutputDir      :: Maybe FilePath
+  , ecTestnet        :: Maybe Integer
+  , ecProtocolParams :: Maybe FilePath
+  } deriving (Show, Eq, Generic)
+
+instance Semigroup EvalConfig where
+  x <> y = EvalConfig
+    { ecOutputDir      = ecOutputDir      x <|> ecOutputDir      y
+    , ecTestnet        = ecTestnet        x <|> ecTestnet        y
+    , ecProtocolParams = ecProtocolParams x <|> ecProtocolParams y
+    }
+
+instance Monoid EvalConfig where
+  mempty = EvalConfig Nothing Nothing Nothing
+
+eval :: EvalConfig -> Tx () -> IO ()
+eval EvalConfig {..} (Tx m) =
   let
     runCardanoCli args = do
       (exitCode, outStr) <- readProcessInterleaved . proc "cardano-cli" $ args
@@ -715,17 +732,17 @@ eval mTestnet protocolParams (Tx m) =
         ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
 
   in runManaged $ do
-    tempDir <- managed (withSystemTempDirectory "tx-builder")
-    txBuilder <- liftIO . execStateT (runReaderT m mTestnet) $ mempty
-    bodyFlags <- transactionBuilderToBuildFlags tempDir mTestnet protocolParams txBuilder
+    tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
+    txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
+    bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams txBuilder
 
     liftIO $ do
       runCardanoCli bodyFlags
 
-      runCardanoCli . transactionBuilderToSignFlags tempDir mTestnet $ txBuilder
+      runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
 
       runCardanoCli . mconcat $
         [ [ "transaction", "submit" ]
-        , toTestnetFlags mTestnet
+        , toTestnetFlags ecTestnet
         , ["--tx-file", tempDir </> "signed-body.txt"]
         ]
