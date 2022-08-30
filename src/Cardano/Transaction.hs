@@ -675,7 +675,7 @@ transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath ->
 transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder {..} = do
   inputs <- inputsToFlags tInputs
   pure . mconcat $
-    [ ["transaction", "build", "--alonzo-era"]
+    [ ["transaction", "build", "--babbage-era"]
     , toTestnetFlags testnet
     , toProtocolParams protocolParams
     , inputs
