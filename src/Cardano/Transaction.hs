@@ -104,37 +104,68 @@ pprValue
   . M.toList
   . unValue
 
-data ScriptInfo = ScriptInfo
-  { siScript    :: FilePath
-  , siDatum     :: Aeson.Value
-  , siRedeemer  :: Aeson.Value
+data InputDatum
+  = Datum Aeson.Value
+  | InlineDatum Aeson.Value
+  deriving (Show, Eq, Ord, Generic)
+
+data InplaceScriptInfo = InplaceScriptInfo
+  { isiScript   :: FilePath
+  , isiDatum    :: InputDatum
+  , isiRedeemer :: Aeson.Value
   } deriving (Show, Eq, Ord, Generic)
 
-data DatumInfo = DatumInfo
-  { diHash  :: String
-  , diDatum :: Maybe Aeson.Value
+data SpendingReferenceInfo = SpendingReferenceInfo
+  { srIsPlutusV2     :: Bool
+  , srReferenceInput :: UTxO
+  , srDatum          :: InputDatum
+  , srRedeemer       :: Aeson.Value
   } deriving (Show, Eq, Ord, Generic)
+
+data UTxODatum
+  = UTxO_NoDatum
+  | UTxO_DatumHash String
+  | UTxO_InlineDatum Aeson.Value
+  deriving (Show, Eq, Ord, Generic)
 
 data UTxO = UTxO
-  { utxoIndex     :: String
-  , utxoTx        :: TxId
-  , utxoDatumHash :: Maybe String
-  , utxoValue     :: Value
-  } deriving (Show, Eq, Ord)
+  { utxoIndex  :: String
+  , utxoTx     :: TxId
+  , utxoValue  :: Value
+  , utxoDatum  :: UTxODatum
+  } deriving (Show, Eq, Ord, Generic)
+
+data ScriptInfo
+  = NoScript
+  | SimpleScriptReference UTxO
+  | SpendingReference SpendingReferenceInfo
+  | InplaceScript InplaceScriptInfo
+  deriving (Show, Eq, Ord, Generic)
 
 data Input = Input
   { iUtxo       :: UTxO
-  , iScriptInfo :: Maybe ScriptInfo
+  , iScriptInfo :: ScriptInfo
   } deriving (Show, Eq, Ord, Generic)
 
+data ReadonlyInput = ReadonlyInput
+  { roiUtxo :: UTxO
+  } deriving (Show, Eq, Ord, Generic)
 
 inputFromUTxO :: UTxO -> Input
-inputFromUTxO x = Input x Nothing
+inputFromUTxO x = Input x NoScript
+
+data OutputDatum
+  = NoOutputDatum
+  | OutputDatumHash String
+  | OutputDatumValue Aeson.Value
+  | OutputDatumInlineValue Aeson.Value
+  deriving (Show, Eq, Ord, Generic)
 
 data Output = Output
-  { oAddress   :: Address
-  , oValue     :: Value
-  , oDatumInfo :: Maybe DatumInfo
+  { oAddress         :: Address
+  , oValue           :: Value
+  , oDatumInfo       :: OutputDatum
+  , oScriptReference :: Maybe FilePath
   } deriving (Show, Eq, Ord, Generic)
 
 type Slot = Integer
@@ -164,38 +195,41 @@ data Mint = Mint
   } deriving (Show, Eq, Ord, Generic)
 
 data TransactionBuilder = TransactionBuilder
-  { tInputs        :: [Input]
-  , tOutputs       :: [Output]
-  , tMint          :: [Mint]
-  , tTimeRange     :: Maybe TimeRange
-  , tSignatures    :: [FilePath]
-  , tMetadata      :: ByteString
-  , tChangeAddress :: Last Address
-  , tCollateral    :: Last UTxO
+  { tInputs         :: [Input]
+  , tReadonlyInputs :: [ReadonlyInput]
+  , tOutputs        :: [Output]
+  , tMint           :: [Mint]
+  , tTimeRange      :: Maybe TimeRange
+  , tSignatures     :: [FilePath]
+  , tMetadata       :: ByteString
+  , tChangeAddress  :: Last Address
+  , tCollateral     :: Last UTxO
   } deriving (Show, Eq, Ord, Generic)
 
 instance Semigroup TransactionBuilder where
   x <> y = TransactionBuilder
-    { tInputs        = tInputs     x <> tInputs     y
-    , tOutputs       = tOutputs    x <> tOutputs    y
-    , tMint          = tMint       x <> tMint       y
-    , tTimeRange     = tTimeRange  x <> tTimeRange  y
-    , tSignatures    = tSignatures x <> tSignatures y
-    , tMetadata      = tMetadata   x <> tMetadata   y
-    , tChangeAddress = tChangeAddress  x <> tChangeAddress    y
-    , tCollateral    = tCollateral x <> tCollateral y
+    { tInputs         = tInputs         x <> tInputs         y
+    , tReadonlyInputs = tReadonlyInputs x <> tReadonlyInputs y
+    , tOutputs        = tOutputs        x <> tOutputs        y
+    , tMint           = tMint           x <> tMint           y
+    , tTimeRange      = tTimeRange      x <> tTimeRange      y
+    , tSignatures     = tSignatures     x <> tSignatures     y
+    , tMetadata       = tMetadata       x <> tMetadata       y
+    , tChangeAddress  = tChangeAddress  x <> tChangeAddress  y
+    , tCollateral     = tCollateral     x <> tCollateral     y
     }
 
 instance Monoid TransactionBuilder where
   mempty = TransactionBuilder
-    { tInputs        = mempty
-    , tOutputs       = mempty
-    , tMint          = mempty
-    , tTimeRange     = mempty
-    , tSignatures    = mempty
-    , tMetadata      = mempty
-    , tChangeAddress = mempty
-    , tCollateral    = mempty
+    { tInputs         = mempty
+    , tReadonlyInputs = mempty
+    , tOutputs        = mempty
+    , tMint           = mempty
+    , tTimeRange      = mempty
+    , tSignatures     = mempty
+    , tMetadata       = mempty
+    , tChangeAddress  = mempty
+    , tCollateral     = mempty
     }
 
 newtype Tx a = Tx { unTx :: ReaderT (Maybe Integer) (StateT TransactionBuilder IO) a }
@@ -246,7 +280,7 @@ collateral :: UTxO -> Tx ()
 collateral utxo = putpend $ mempty { tCollateral = pure utxo }
 
 input :: UTxO -> Tx ()
-input x = putpend $ mempty { tInputs = [Input x Nothing] }
+input x = putpend $ mempty { tInputs = [Input x NoScript] }
 
 scriptInput
   :: (A.ToData d, A.ToData r)
@@ -260,10 +294,10 @@ scriptInput
   -- ^ Redeemer
   -> Tx ()
 scriptInput utxo scriptFile datum redeemer = putpend $ mempty {
-    tInputs = pure $ Input utxo $ Just $ ScriptInfo
-      { siDatum     = toCliJson datum
-      , siRedeemer  = toCliJson redeemer
-      , siScript    = scriptFile
+    tInputs = pure $ Input utxo $ InplaceScript $ InplaceScriptInfo
+      { isiDatum     = Datum $ toCliJson datum
+      , isiRedeemer  = toCliJson redeemer
+      , isiScript    = scriptFile
       }
   }
 
@@ -288,14 +322,15 @@ parseUTxOLine :: String -> Maybe UTxO
 parseUTxOLine line = case words line of
   utxoTx:utxoIndex:rest -> do
     utxoValue <- parseValue' rest
-    let utxoDatumHash = parseDatumHash rest
+    let utxoDatum = parseDatum rest
     pure UTxO {..}
   _ -> Nothing
 
-parseDatumHash :: [String] -> Maybe String
-parseDatumHash xs = case reverse xs of
-  hash:_:"TxOutDatumHash":"+":_ -> Just . takeWhile (/= '"') . drop 1 $ hash
-  _ -> Nothing
+-- TODO parse an inline datum
+parseDatum :: [String] -> UTxODatum
+parseDatum xs = case reverse xs of
+  hash:_:"TxOutDatumHash":"+":_ -> UTxO_DatumHash . takeWhile (/= '"') . drop 1 $ hash
+  _ -> UTxO_NoDatum
 
 parseNonNativeTokens :: [String] -> Maybe Value
 parseNonNativeTokens = go mempty where
@@ -331,11 +366,11 @@ queryUtxos address mTestnet =
 
 findScriptInputs
   :: Address
-  -> DatumHash
+  -> UTxODatum
   -> Tx [UTxO]
-findScriptInputs address datumHash = do
+findScriptInputs address datum = do
   testnetConfig <- getTestnetConfig
-  liftIO $ filter ((==Just datumHash) . utxoDatumHash) <$> queryUtxos address testnetConfig
+  liftIO $ filter ((== datum) . utxoDatum) <$> queryUtxos address testnetConfig
 
 hashScript :: FilePath -> IO Address
 hashScript plutusFile = readFile $ replaceExtension plutusFile "addr"
@@ -367,7 +402,7 @@ firstScriptInput scriptFile datum redeemer = do
   scriptAddress <- liftIO $ hashScript scriptFile
   datumHash <- liftIO $ hashDatum $ toCliJson datum
   utxo <- liftIO . maybe (throwIO $ userError "firstScriptInput: no utxos") pure . listToMaybe =<<
-    findScriptInputs scriptAddress datumHash
+    findScriptInputs scriptAddress (UTxO_DatumHash datumHash)
   scriptInput utxo scriptFile datum redeemer
 
 splitNonAdaAssets :: Value -> (Value, Value)
@@ -477,8 +512,6 @@ selectCollateralInput addr = do
 
   pure (i, utxoValue iUtxo)
 
-
-
 currentSlotIO :: Maybe Integer -> IO Slot
 currentSlotIO mTestnet = do
   either (\x -> throwIO $ userError $ "could not parse tip" <> x)
@@ -504,7 +537,7 @@ output :: Address
        -> Value
        -> Tx Output
 output a v = do
-  let out = Output a v Nothing
+  let out = Output a v NoOutputDatum Nothing
   putpend $ mempty { tOutputs = [out] }
   pure out
 
@@ -518,7 +551,7 @@ outputWithHash a v d = do
   datumHash <- liftIO $ hashDatum $ toCliJson d
   putpend $
     mempty
-      { tOutputs = [Output a v $ Just $ DatumInfo datumHash Nothing] }
+      { tOutputs = [Output a v (OutputDatumHash datumHash) Nothing] }
 
 outputWithDatum
           :: A.ToData d
@@ -528,9 +561,8 @@ outputWithDatum
           -> Tx ()
 outputWithDatum a v d = do
   let datumValue = toCliJson d
-  datumHash <- liftIO $ hashDatum datumValue
   putpend $ mempty
-    { tOutputs = [Output a v $ Just $ DatumInfo datumHash (Just datumValue) ] }
+    { tOutputs = [Output a v (OutputDatumValue datumValue) Nothing] }
 
 -- Get all of the utxos
 -- merge the values
@@ -563,29 +595,68 @@ managedSystemTempFile :: String -> Managed (FilePath, Handle)
 managedSystemTempFile n = managed (withSystemTempFile n . curry)
 
 toScriptFlags :: ScriptInfo -> Managed [String]
-toScriptFlags ScriptInfo{..} = do
-  (datumFile, dfh) <-  managedSystemTempFile "datum.json"
-  liftIO $ do
-    BSL.hPutStr dfh . Aeson.encode $ siDatum
-    hClose dfh
+toScriptFlags = \case
+  NoScript -> pure []
+  SimpleScriptReference utxo -> pure ["--simple-script-tx-in-reference", pprUtxo utxo]
+  SpendingReference SpendingReferenceInfo {..} -> do
+    let plutusV2Flags = if srIsPlutusV2
+          then ["--spending-plutus-script-v2"]
+          else []
 
-  (redeemerFile, rfh) <- managedSystemTempFile "redeemer.json"
-  liftIO $ do
-    BSL.hPutStr rfh . Aeson.encode $ siRedeemer
-    hClose rfh
+    (redeemerFile, rfh) <- managedSystemTempFile "redeemer.json"
+    liftIO $ do
+      BSL.hPutStr rfh . Aeson.encode $ srRedeemer
+      hClose rfh
 
-  pure
-    [ "--tx-in-script-file"
-    , siScript
-    , "--tx-in-datum-file"
-    , datumFile
-    , "--tx-in-redeemer-file"
-    , redeemerFile
-    ]
+    datumFlags <- case srDatum of
+      Datum x -> do
+        (datumFile, dfh) <- managedSystemTempFile "datum.json"
+        liftIO $ do
+          BSL.hPutStr dfh $ Aeson.encode x
+          hClose dfh
+
+        pure ["--tx-in-datum-file", datumFile]
+
+      InlineDatum _ -> pure ["--tx-in-inline-datum-present"]
+
+    pure
+      $ [ "--spending-tx-in-reference "
+        , pprUtxo srReferenceInput
+        ]
+      <> plutusV2Flags
+      <> datumFlags
+      <> [ "--spending-reference-tx-in-redeemer-file"
+         , redeemerFile
+         ]
+  InplaceScript InplaceScriptInfo {..} -> do
+    (redeemerFile, rfh) <- managedSystemTempFile "redeemer.json"
+    liftIO $ do
+      BSL.hPutStr rfh . Aeson.encode $ isiRedeemer
+      hClose rfh
+
+    datumFlags <- case isiDatum of
+      Datum x -> do
+        (datumFile, dfh) <- managedSystemTempFile "datum.json"
+        liftIO $ do
+          BSL.hPutStr dfh $ Aeson.encode x
+          hClose dfh
+
+        pure ["--tx-in-datum-file", datumFile]
+
+      InlineDatum _ -> pure ["--tx-in-inline-datum-present"]
+
+    pure
+      $ [ "--tx-in-script-file"
+        , isiScript
+        ]
+      <> datumFlags
+      <> [ "--tx-in-redeemer-file"
+         , redeemerFile
+        ]
 
 toInputFlags :: Input -> Managed [String]
 toInputFlags Input {..} =
-  mappend ["--tx-in", pprUtxo iUtxo] <$> maybe (pure []) toScriptFlags iScriptInfo
+  mappend ["--tx-in", pprUtxo iUtxo] <$> toScriptFlags iScriptInfo
 
 pprUtxo :: UTxO -> String
 pprUtxo UTxO{..} = utxoTx <> "#" <> utxoIndex
@@ -606,15 +677,12 @@ valueToOutput
 pprJson :: Aeson.Value -> String
 pprJson = BSLC.unpack . Aeson.encode
 
-datumToOutputs :: Maybe DatumInfo -> [String]
+datumToOutputs :: OutputDatum -> [String]
 datumToOutputs = \case
-  Nothing -> []
-  Just DatumInfo {..}
-    -> ["--tx-out-datum-hash", diHash]
-       ++ case diDatum of
-          Nothing -> []
-          Just d -> ["--tx-out-datum-embed-value", pprJson d]
-
+  NoOutputDatum -> []
+  OutputDatumHash dh -> ["--tx-out-datum-hash", dh]
+  OutputDatumValue d -> ["--tx-out-datum-embed-value", pprJson d]
+  OutputDatumInlineValue d -> ["--tx-out-inline-datum-value", pprJson d]
 
 outputToFlags :: Output -> [String]
 outputToFlags Output {..}
