@@ -109,7 +109,7 @@ pprValue
 
 data InputDatum
   = Datum Aeson.Value
-  | InlineDatum Aeson.Value
+  | InlineDatum
   deriving (Show, Eq, Ord, Generic)
 
 data InplaceScriptInfo = InplaceScriptInfo
@@ -128,7 +128,7 @@ data SpendingReferenceInfo = SpendingReferenceInfo
 data UTxODatum
   = UTxO_NoDatum
   | UTxO_DatumHash String
-  | UTxO_InlineDatum Aeson.Value
+  | UTxO_InlineDatum (Maybe Aeson.Value)
   deriving (Show, Eq, Ord, Generic)
 
 data UTxO = UTxO
@@ -304,6 +304,26 @@ scriptInput utxo scriptFile datum redeemer = putpend $ mempty {
       }
   }
 
+scriptReferenceV2Input
+  :: (A.ToData d, A.ToData r)
+  => UTxO
+  -- ^ UTxO to spend
+  -> UTxO
+  -- ^ Script UTxO
+  -> d
+  -- ^ Datum
+  -> r
+  -- ^ Redeemer
+  -> Tx ()
+scriptReferenceV2Input utxo scriptReferenceUtxo datum redeemer = putpend $ mempty {
+    tInputs = pure $ Input utxo $ SpendingReference $ SpendingReferenceInfo
+      { srIsPlutusV2 = True
+      , srReferenceInput = scriptReferenceUtxo
+      , srDatum     = Datum $ toCliJson datum
+      , srRedeemer       = toCliJson redeemer
+      }
+  }
+
 toCliJson :: A.ToData a => a -> Aeson.Value
 toCliJson
   = S.scriptDataToJson S.ScriptDataJsonDetailedSchema
@@ -361,7 +381,7 @@ parseDatum
   <|> (  void (string "+")
       *> space1
       *> (   (UTxO_DatumHash   <$> parseDatumHash)
-         <|> (UTxO_InlineDatum <$> parseInlineDatum )
+         <|> (UTxO_InlineDatum . Just <$> parseInlineDatum )
          )
       )
 
@@ -629,6 +649,16 @@ outputWithInlineDatum a v d = do
   putpend $ mempty
     { tOutputs = [Output a v (OutputDatumInlineValue datumValue) Nothing] }
 
+outputWithScriptReference
+  :: Address
+  -> Value
+  -> FilePath
+  -> Tx Output
+outputWithScriptReference a v fp = do
+  let out = Output a v NoOutputDatum $ Just fp
+  putpend $ mempty { tOutputs = [out] }
+  pure out
+
 -- Get all of the utxos
 -- merge the values
 account :: Address -> Tx Value
@@ -682,7 +712,7 @@ toScriptFlags = \case
 
         pure ["--tx-in-datum-file", datumFile]
 
-      InlineDatum _ -> pure ["--tx-in-inline-datum-present"]
+      InlineDatum -> pure ["--tx-in-inline-datum-present"]
 
     pure
       $ [ "--spending-tx-in-reference "
@@ -708,7 +738,7 @@ toScriptFlags = \case
 
         pure ["--tx-in-datum-file", datumFile]
 
-      InlineDatum _ -> pure ["--tx-in-inline-datum-present"]
+      InlineDatum -> pure ["--tx-in-inline-datum-present"]
 
     pure
       $ [ "--tx-in-script-file"

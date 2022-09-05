@@ -130,7 +130,7 @@ main = hspec $ describe "UTxO parser tests" $ do
                       $ M.insert "" (M.singleton "" 2000000)
                       $ M.singleton "d6cfdbedd242056674c0e51ead01785497e3a48afbbb146dc72ee1e2"
                       $ M.singleton "123456" 1
-        , utxoDatum  = UTxO_InlineDatum expectedScriptData
+        , utxoDatum  = UTxO_InlineDatum $ Just expectedScriptData
         }
 
     parseUTxOLine initial `shouldBe` Right expected
