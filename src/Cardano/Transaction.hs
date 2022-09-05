@@ -891,6 +891,7 @@ eval :: EvalConfig -> Tx () -> IO ()
 eval EvalConfig {..} (Tx m) =
   let
     runCardanoCli args = do
+      print args
       (exitCode, outStr) <- readProcessInterleaved . proc "cardano-cli" $ args
       case exitCode of
         ExitSuccess -> pure ()
