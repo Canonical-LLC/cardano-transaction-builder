@@ -118,3 +118,19 @@ main = hspec $ describe "UTxO parser tests" $ do
         }
 
     parseUTxOLine initial `shouldBe` Right expected
+
+  it "parses a full line: inline datum" $ do
+    let
+      initial = [i|7b8094583b602d196df51125a5cf74aef0a4603d3b8d8690e25a007262a00113     1        2000000 lovelace + 1 d6cfdbedd242056674c0e51ead01785497e3a48afbbb146dc72ee1e2.123456 + TxOutDatumInline ReferenceTxInsScriptsInlineDatumsInBabbageEra ${inputScriptData}|]
+
+      expected = UTxO
+        { utxoIndex  = 1
+        , utxoTx     = "7b8094583b602d196df51125a5cf74aef0a4603d3b8d8690e25a007262a00113"
+        , utxoValue  =  Value
+                      $ M.insert "" (M.singleton "" 2000000)
+                      $ M.singleton "d6cfdbedd242056674c0e51ead01785497e3a48afbbb146dc72ee1e2"
+                      $ M.singleton "123456" 1
+        , utxoDatum  = UTxO_InlineDatum expectedScriptData
+        }
+
+    parseUTxOLine initial `shouldBe` Right expected
