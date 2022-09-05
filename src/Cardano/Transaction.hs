@@ -378,14 +378,13 @@ scriptDataStringToJson str = do
   pure $ S.scriptDataToJson S.ScriptDataJsonDetailedSchema scriptData
 
 parseDatum :: Parser UTxODatum
-parseDatum
-  =   (UTxO_NoDatum <$ eof)
-  <|> (  void (string "+")
-      *> space1
-      *> (   (UTxO_DatumHash   <$> parseDatumHash)
-         <|> (UTxO_InlineDatum . Just <$> parseInlineDatum )
-         )
-      )
+parseDatum = do
+  void $ string "+"
+  space1
+  (UTxO_DatumHash   <$> parseDatumHash)
+    <|> (UTxO_InlineDatum . Just <$> parseInlineDatum )
+    <|> (UTxO_NoDatum <$ eof )
+
 
 parseDatumHash :: Parser String
 parseDatumHash = do
