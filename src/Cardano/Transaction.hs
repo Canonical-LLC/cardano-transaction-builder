@@ -1,4 +1,4 @@
-{-# LANGUAGE NamedFieldPuns #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Cardano.Transaction where
 
@@ -21,7 +21,6 @@ import           Control.Exception
 import           Text.Read (readMaybe)
 import           Control.Concurrent
 import qualified Control.Lens as L
-import           Data.List.Split
 import qualified Data.Aeson.Lens as AL
 import           System.IO.Temp
 import           Data.Maybe
@@ -31,7 +30,11 @@ import           Data.String
 import           System.IO
 import           System.Exit
 import           System.Process.Typed
-import           Control.Applicative
+-- import           Control.Applicative
+import           Text.Megaparsec
+import qualified Text.Megaparsec.Char.Lexer as L
+import           Text.Megaparsec.Char
+import           Data.Bifunctor
 
 newtype Value = Value { unValue :: Map String (Map String Integer) }
   deriving (Show, Eq, Ord)
@@ -93,8 +96,8 @@ diffValuesWithNegatives (Value x) (Value y) = Value $ M.differenceWith (diffToke
 
 pprPolicyTokens :: String -> Map String Integer -> [String]
 pprPolicyTokens policyId tokenMap = if policyId == ""
-  then map (\count -> show count <> " lovelace") $ M.elems tokenMap
-  else map (\(tokenName, count) -> show count <> " " <> policyId <> "." <> tokenName )
+  then map (\theCount -> show theCount <> " lovelace") $ M.elems tokenMap
+  else map (\(tokenName, theCount) -> show theCount <> " " <> policyId <> "." <> tokenName )
     $ M.toList tokenMap
 
 pprValue :: Value -> String
@@ -129,7 +132,7 @@ data UTxODatum
   deriving (Show, Eq, Ord, Generic)
 
 data UTxO = UTxO
-  { utxoIndex  :: String
+  { utxoIndex  :: Integer
   , utxoTx     :: TxId
   , utxoValue  :: Value
   , utxoDatum  :: UTxODatum
@@ -308,46 +311,97 @@ toCliJson
   . A.toData
 
 parseValue :: String -> Maybe Value
-parseValue = parseValue' . words
+parseValue = parseMaybe parseValue'
 
-parseValue' :: [String] -> Maybe Value
-parseValue' xs = case xs of
-  lovelacesStr:"lovelace":nonNativeTokens -> do
-    lovelaces <- readMaybe lovelacesStr
-    Value initialValue <- parseNonNativeTokens nonNativeTokens
-    pure $ Value $ M.insert "" (M.singleton "" lovelaces) initialValue
-  _ -> Nothing
+parseValue' :: Parser Value
+parseValue' = do
+  lovelaces <- L.signed space L.decimal
+  space1
+  void $ string "lovelace"
+  space1
+  Value initialValue <- parseNonNativeTokens
+  pure $ Value $ M.insert "" (M.singleton "" lovelaces) initialValue
 
-parseUTxOLine :: String -> Maybe UTxO
-parseUTxOLine line = case words line of
-  utxoTx:utxoIndex:rest -> do
-    utxoValue <- parseValue' rest
-    let utxoDatum = parseDatum rest
-    pure UTxO {..}
-  _ -> Nothing
 
--- TODO parse an inline datum
-parseDatum :: [String] -> UTxODatum
-parseDatum xs = case reverse xs of
-  hash:_:"TxOutDatumHash":"+":_ -> UTxO_DatumHash . takeWhile (/= '"') . drop 1 $ hash
-  _ -> UTxO_NoDatum
+type Parser = Parsec String String
 
-parseNonNativeTokens :: [String] -> Maybe Value
-parseNonNativeTokens = go mempty where
-  go (Value acc) xs = case xs of
-    [] -> Just $ Value acc
-    "+":"TxOutDatumNone":[] -> Just $ Value acc
-    "+":"TxOutDatumHash":_ -> Just $ Value acc
-    "+":countStr:asset:rest -> do
-      count <- readMaybe countStr
-      (policyId, tokenName) <- case splitOn "." asset of
-        [policyId, tokenName] -> Just (policyId, tokenName)
-        _ -> Nothing
 
-      let newAcc = Value $ M.insertWith (<>) policyId (M.singleton tokenName count) acc
+parseEmtpyState :: String -> Parser a -> Either String a
+parseEmtpyState line theParser = bimap show id $ parse theParser "" line
 
-      go newAcc rest
-    _ -> Nothing
+parseTxId :: Parser String
+parseTxId = some hexDigitChar
+
+parseUTxOIndex :: Parser Integer
+parseUTxOIndex = L.signed space L.decimal
+
+-- TODO can't just split by words
+-- Need to take the first word and the second etc
+parseUTxOLine :: String -> Either String UTxO
+parseUTxOLine line = parseEmtpyState line $ do
+  utxoTx    <- parseTxId
+  space1
+  utxoIndex <- parseUTxOIndex
+  space1
+  utxoValue <- parseValue'
+  space1
+  utxoDatum <- parseDatum
+  pure UTxO {..}
+
+deriving instance Read S.ScriptData
+
+scriptDataStringToJson :: String -> Maybe Aeson.Value
+scriptDataStringToJson str = do
+  scriptData <- readMaybe str :: Maybe S.ScriptData
+  pure $ S.scriptDataToJson S.ScriptDataJsonDetailedSchema scriptData
+
+parseDatum :: Parser UTxODatum
+parseDatum
+  =   (UTxO_NoDatum <$ eof)
+  <|> (  void (string "+")
+      *> space1
+      *> (   (UTxO_DatumHash   <$> parseDatumHash)
+         <|> (UTxO_InlineDatum <$> parseInlineDatum )
+         )
+      )
+
+parseDatumHash :: Parser String
+parseDatumHash = do
+  void $ string "TxOutDatumHash"
+  (space1 *> string "ScriptDataInBabbageEra" *> space1) <|> space1
+  void $ char '"'
+  hash <- some hexDigitChar
+  void $ char '"'
+  pure hash
+
+
+parseInlineDatum :: Parser Aeson.Value
+parseInlineDatum = do
+  void $ string "TxOutDatumInline"
+  space1
+  void $ string "ReferenceTxInsScriptsInlineDatumsInBabbageEra"
+  space1
+  datumValueString <- many anySingle
+  maybe mzero pure $ scriptDataStringToJson datumValueString
+
+parseCountPolicyIdTokenName :: Parser (Integer, String, String)
+parseCountPolicyIdTokenName = do
+  void $ string "+"
+  space1
+  theCount <- L.signed space L.decimal
+  space1
+  policyId <- some hexDigitChar
+  void $ char '.'
+  tokenName <- some hexDigitChar
+  pure (theCount, policyId, tokenName)
+
+
+parseNonNativeTokens :: Parser Value
+parseNonNativeTokens = do
+  countsAndAssets <- many parseCountPolicyIdTokenName
+
+  pure $ Value $ foldr (\(theCount, policyId, tokenName) acc -> M.insertWith (<>) policyId (M.singleton tokenName theCount) acc) mempty countsAndAssets
+
 
 queryUtxos :: Address -> Maybe Integer -> IO [UTxO]
 queryUtxos address mTestnet =
@@ -360,9 +414,9 @@ queryUtxos address mTestnet =
       ] <>
       maybe ["--mainnet"] (\x -> ["--testnet-magic", show x]) mTestnet
 
-    parse = mapM (\line -> maybe (throwIO . userError $ "Failed to parse UTxO for line: " <> line) pure $ parseUTxOLine line) . drop 2 . lines . BSLC.unpack
+    parseAction = mapM (\line -> either (\msg -> throwIO . userError $ "Failed to parse UTxO for line: " <> line <> " msg: " <> show msg) pure $ parseUTxOLine line) . drop 2 . lines . BSLC.unpack
   in
-    parse =<< readProcessStdout_ p
+    parseAction =<< readProcessStdout_ p
 
 findScriptInputs
   :: Address
@@ -659,7 +713,7 @@ toInputFlags Input {..} =
   mappend ["--tx-in", pprUtxo iUtxo] <$> toScriptFlags iScriptInfo
 
 pprUtxo :: UTxO -> String
-pprUtxo UTxO{..} = utxoTx <> "#" <> utxoIndex
+pprUtxo UTxO{..} = utxoTx <> "#" <> show utxoIndex
 
 inputsToFlags :: [Input] -> Managed [String]
 inputsToFlags = fmap mconcat . traverse toInputFlags
