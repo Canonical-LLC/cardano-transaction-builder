@@ -618,6 +618,17 @@ outputWithDatum a v d = do
   putpend $ mempty
     { tOutputs = [Output a v (OutputDatumValue datumValue) Nothing] }
 
+outputWithInlineDatum
+          :: A.ToData d
+          => Address
+          -> Value
+          -> d
+          -> Tx ()
+outputWithInlineDatum a v d = do
+  let datumValue = toCliJson d
+  putpend $ mempty
+    { tOutputs = [Output a v (OutputDatumInlineValue datumValue) Nothing] }
+
 -- Get all of the utxos
 -- merge the values
 account :: Address -> Tx Value
