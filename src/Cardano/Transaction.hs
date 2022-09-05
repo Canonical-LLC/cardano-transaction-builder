@@ -338,10 +338,12 @@ parseValue' = do
   lovelaces <- L.signed space L.decimal
   space1
   void $ string "lovelace"
-  space1
-  Value initialValue <- parseNonNativeTokens
-  pure $ Value $ M.insert "" (M.singleton "" lovelaces) initialValue
-
+  mTokens <- optional $ do
+    space1
+    unValue <$> parseNonNativeTokens
+  pure $ Value $ case mTokens of
+    Just theTokens -> M.insert "" (M.singleton "" lovelaces) theTokens
+    Nothing -> M.singleton "" (M.singleton "" lovelaces)
 
 type Parser = Parsec String String
 

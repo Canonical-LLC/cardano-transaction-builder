@@ -83,6 +83,16 @@ main = hspec $ describe "UTxO parser tests" $ do
 
     parseMaybe parseUTxOIndex initial `shouldBe` Just expected
 
+  it "parses a simple value" $ do
+    let
+      initial = [i|2000000 lovelace|]
+
+      expected
+        = Value
+        $ M.singleton "" (M.singleton "" 2000000)
+
+    parseValue initial `shouldBe` Just expected
+
   it "parses the value" $ do
     let
       initial = [i|2000000 lovelace + 1 d6cfdbedd242056674c0e51ead01785497e3a48afbbb146dc72ee1e2.123456|]
