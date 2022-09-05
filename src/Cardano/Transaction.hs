@@ -338,9 +338,9 @@ parseValue' = do
   lovelaces <- L.signed space L.decimal
   space1
   void $ string "lovelace"
-  mTokens <- optional $ do
+  mTokens <- (Text.Megaparsec.try $ do
     space1
-    unValue <$> parseNonNativeTokens
+    Just . unValue <$> parseNonNativeTokens) <|> pure Nothing
   pure $ Value $ case mTokens of
     Just theTokens -> M.insert "" (M.singleton "" lovelaces) theTokens
     Nothing -> M.singleton "" (M.singleton "" lovelaces)

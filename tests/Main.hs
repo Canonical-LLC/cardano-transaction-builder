@@ -144,3 +144,17 @@ main = hspec $ describe "UTxO parser tests" $ do
         }
 
     parseUTxOLine initial `shouldBe` Right expected
+
+  it "parses a full line: no datum" $ do
+    let
+      initial = [i|7b8094583b602d196df51125a5cf74aef0a4603d3b8d8690e25a007262a00113     1        2000000 lovelace + TxOutDatumNone|]
+
+      expected = UTxO
+        { utxoIndex  = 1
+        , utxoTx     = "7b8094583b602d196df51125a5cf74aef0a4603d3b8d8690e25a007262a00113"
+        , utxoValue  =  Value
+                      $ M.singleton "" (M.singleton "" 2000000)
+        , utxoDatum  = UTxO_NoDatum
+        }
+
+    parseUTxOLine initial `shouldBe` Right expected
