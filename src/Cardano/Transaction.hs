@@ -383,7 +383,7 @@ parseDatum = do
   space1
   (UTxO_DatumHash   <$> parseDatumHash)
     <|> (UTxO_InlineDatum . Just <$> parseInlineDatum )
-    <|> (UTxO_NoDatum <$ eof )
+    <|> (UTxO_NoDatum <$ string "TxOutDatumNone" )
 
 
 parseDatumHash :: Parser String
