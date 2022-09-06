@@ -710,9 +710,9 @@ toScriptFlags = \case
           BSL.hPutStr dfh $ Aeson.encode x
           hClose dfh
 
-        pure ["--tx-in-datum-file", datumFile]
+        pure ["--spending-reference-tx-in-datum-file", datumFile]
 
-      InlineDatum -> pure ["--tx-in-inline-datum-present"]
+      InlineDatum -> pure ["--spending-reference-tx-in-inline-datum-present"]
 
     pure
       $ [ "--spending-tx-in-reference"
