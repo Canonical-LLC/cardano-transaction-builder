@@ -905,7 +905,7 @@ eval EvalConfig {..} (Tx m) =
       let
         bodyFile = toSigningBodyFlags tempDir
       -- get the txid
-      txId <- runCardanoCli $ ["transaction", "txid", "--tx-body-file"] <> bodyFile
+      txId <- runCardanoCli $ ["transaction", "txid"] <> bodyFile
 
       void . runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
 
