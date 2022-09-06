@@ -338,9 +338,7 @@ parseValue' = do
   lovelaces <- L.signed space L.decimal
   space1
   void $ string "lovelace"
-  mTokens <- (Text.Megaparsec.try $ do
-    space1
-    Just . unValue <$> parseNonNativeTokens) <|> pure Nothing
+  mTokens <- fmap unValue <$> optional parseNonNativeTokens
   pure $ Value $ case mTokens of
     Just theTokens -> M.insert "" (M.singleton "" lovelaces) theTokens
     Nothing -> M.singleton "" (M.singleton "" lovelaces)
@@ -407,6 +405,7 @@ parseInlineDatum = do
 
 parseCountPolicyIdTokenName :: Parser (Integer, String, String)
 parseCountPolicyIdTokenName = do
+  space1
   void $ string "+"
   space1
   theCount <- L.signed space L.decimal
@@ -419,7 +418,7 @@ parseCountPolicyIdTokenName = do
 
 parseNonNativeTokens :: Parser Value
 parseNonNativeTokens = do
-  countsAndAssets <- many parseCountPolicyIdTokenName
+  countsAndAssets <- some (Text.Megaparsec.try parseCountPolicyIdTokenName)
 
   pure $ Value $ foldr (\(theCount, policyId, tokenName) acc -> M.insertWith (<>) policyId (M.singleton tokenName theCount) acc) mempty countsAndAssets
 

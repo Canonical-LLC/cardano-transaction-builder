@@ -158,3 +158,20 @@ main = hspec $ describe "UTxO parser tests" $ do
         }
 
     parseUTxOLine initial `shouldBe` Right expected
+
+  it "parses a full line multiple assets: no datum" $ do
+    let
+      initial = [i|449c343ef3f65ea33b36ff0b77ac9f196d92552678c262b497fa997fe22e3328     1        3000000 lovelace + 1 7038197ba9c25791cf7849d3727c812075f07d29cb4f049eab741400.313233343536 + 1 ce8822885d18e7d304ef0248af49359d687a94f0e3635eea14c6154e.313233343536 + TxOutDatumNone|]
+
+      expected = UTxO
+        { utxoIndex  = 1
+        , utxoTx     = "449c343ef3f65ea33b36ff0b77ac9f196d92552678c262b497fa997fe22e3328"
+        , utxoValue  =  Value
+                      $ M.insert "" (M.singleton "" 3000000)
+                      $ M.insert "7038197ba9c25791cf7849d3727c812075f07d29cb4f049eab741400" (M.singleton "313233343536" 1)
+                      $ M.singleton "ce8822885d18e7d304ef0248af49359d687a94f0e3635eea14c6154e"
+                      $ M.singleton "313233343536" 1
+        , utxoDatum  = UTxO_NoDatum
+        }
+
+    parseUTxOLine initial `shouldBe` Right expected
