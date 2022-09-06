@@ -713,7 +713,7 @@ toScriptFlags = \case
         pure ["--tx-in-datum-file", datumFile]
 
       InlineDatum -> pure ["--tx-in-inline-datum-present"]
---spending-tx-in-reference '\n\nDid you mean one of these?\n    --spending-tx-in-reference
+
     pure
       $ [ "--spending-tx-in-reference"
         , pprUtxo srReferenceInput
@@ -905,7 +905,7 @@ eval EvalConfig {..} (Tx m) =
       let
         bodyFile = toSigningBodyFlags tempDir
       -- get the txid
-      txId <- runCardanoCli $ ["transaction", "txid"] <> bodyFile
+      txId <- fmap init $ runCardanoCli $ ["transaction", "txid"] <> bodyFile
 
       void . runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
 
@@ -915,4 +915,4 @@ eval EvalConfig {..} (Tx m) =
         , ["--tx-file", tempDir </> "signed-body.txt"]
         ]
 
-      pure txId
+      pure $ txId
