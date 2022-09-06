@@ -22,4 +22,4 @@ transaction = do
   sign buyerSKey
 
 test :: IO ()
-test = eval (mempty { ecTestnet = Just 1097911063}) transaction
+test = void $ eval (mempty { ecTestnet = Just 1097911063}) transaction

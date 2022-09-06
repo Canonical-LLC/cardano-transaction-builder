@@ -885,28 +885,34 @@ instance Semigroup EvalConfig where
 instance Monoid EvalConfig where
   mempty = EvalConfig Nothing Nothing Nothing
 
-eval :: EvalConfig -> Tx () -> IO ()
+eval :: EvalConfig -> Tx () -> IO String
 eval EvalConfig {..} (Tx m) =
   let
     runCardanoCli args = do
       print args
       (exitCode, outStr) <- readProcessInterleaved . proc "cardano-cli" $ args
       case exitCode of
-        ExitSuccess -> pure ()
+        ExitSuccess -> pure $ BSLC.unpack outStr
         ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
 
-  in runManaged $ do
+  in flip with pure $ do
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
     txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
     bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams txBuilder
 
     liftIO $ do
-      runCardanoCli bodyFlags
+      void $ runCardanoCli bodyFlags
+      let
+        bodyFile = toSigningBodyFlags tempDir
+      -- get the txid
+      txId <- runCardanoCli $ ["transaction", "txid", "--tx-body-file"] <> bodyFile
 
-      runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
+      void . runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
 
-      runCardanoCli . mconcat $
+      void . runCardanoCli . mconcat $
         [ [ "transaction", "submit" ]
         , toTestnetFlags ecTestnet
         , ["--tx-file", tempDir </> "signed-body.txt"]
         ]
+
+      pure txId
