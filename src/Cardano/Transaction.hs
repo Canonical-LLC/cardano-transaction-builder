@@ -713,9 +713,9 @@ toScriptFlags = \case
         pure ["--tx-in-datum-file", datumFile]
 
       InlineDatum -> pure ["--tx-in-inline-datum-present"]
-
+--spending-tx-in-reference '\n\nDid you mean one of these?\n    --spending-tx-in-reference
     pure
-      $ [ "--spending-tx-in-reference "
+      $ [ "--spending-tx-in-reference"
         , pprUtxo srReferenceInput
         ]
       <> plutusV2Flags
