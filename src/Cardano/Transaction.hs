@@ -787,6 +787,7 @@ outputToFlags Output {..}
       , oAddress <> " " <> valueToOutput oValue
       ]
     <> datumToOutputs oDatumInfo
+    <> maybe [] (\fp -> ["--tx-out-reference-script-file", fp]) oScriptReference
 
 outputsToFlags :: [Output] -> [String]
 outputsToFlags = concatMap outputToFlags
