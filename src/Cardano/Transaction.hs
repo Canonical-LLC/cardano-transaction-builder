@@ -889,8 +889,8 @@ transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder 
     ]
 
 
-transactionBuilderToRawFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> TransactionBuilder -> Integer -> Managed [String]
-transactionBuilderToRawFlags tmpDir testnet protocolParams TransactionBuilder {..} fee = do
+transactionBuilderToRawFlags :: FilePath -> Maybe FilePath -> TransactionBuilder -> Integer -> Managed [String]
+transactionBuilderToRawFlags tmpDir protocolParams TransactionBuilder {..} fee = do
   inputs <- inputsToRawFlags tInputs
   pure . mconcat $
     [ ["transaction", "build-raw", "--babbage-era"]
@@ -984,7 +984,7 @@ evalRaw EvalConfig {..} fee (Tx m) =
   in flip with pure $ do
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
     txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
-    bodyFlags <- transactionBuilderToRawFlags tempDir ecTestnet ecProtocolParams txBuilder fee
+    bodyFlags <- transactionBuilderToRawFlags tempDir ecProtocolParams txBuilder fee
 
     liftIO $ do
       void $ runCardanoCli bodyFlags
