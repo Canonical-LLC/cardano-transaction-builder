@@ -528,7 +528,20 @@ balanceNonAdaAssets addr = do
 
     Just <$> output addr withExtraAda
 
+balanceAllAssets :: Address
+              -- ^ Change address
+              -> Tx (Maybe Output)
+balanceAllAssets addr = do
+  TransactionBuilder {..} <- getTransactionBuilder
+  let
+    inputValue = mconcat $ map (utxoValue . iUtxo) tInputs
+    outputValue = mconcat $ map oValue tOutputs
+    theDiffValue = inputValue `diffValues` outputValue
 
+    -- Make sure there are non-ada assets in there
+
+  if theDiffValue == mempty then pure Nothing else do
+    Just <$> output addr theDiffValue
 
 selectInputs :: Value
              -- ^ Outputs to match
