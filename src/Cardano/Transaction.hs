@@ -116,13 +116,24 @@ data InplaceScriptInfo = InplaceScriptInfo
   { isiScript   :: FilePath
   , isiDatum    :: InputDatum
   , isiRedeemer :: Aeson.Value
+  , isiBudget   :: Maybe Budget
   } deriving (Show, Eq, Ord, Generic)
+
+data Budget = Budget
+  { bCpu :: Integer
+  , bMemory :: Integer
+  } deriving (Show, Eq, Ord, Generic)
+
+budgetToFlagOutput :: Budget -> String
+budgetToFlagOutput Budget {..}
+  = "(" <> show bCpu <> "," <> show bMemory <> ")"
 
 data SpendingReferenceInfo = SpendingReferenceInfo
   { srIsPlutusV2     :: Bool
   , srReferenceInput :: UTxO
   , srDatum          :: InputDatum
   , srRedeemer       :: Aeson.Value
+  , srBudget         :: Maybe Budget
   } deriving (Show, Eq, Ord, Generic)
 
 data UTxODatum
@@ -301,6 +312,7 @@ scriptInput utxo scriptFile datum redeemer = putpend $ mempty {
       { isiDatum     = Datum $ toCliJson datum
       , isiRedeemer  = toCliJson redeemer
       , isiScript    = scriptFile
+      , isiBudget    = Nothing
       }
   }
 
@@ -314,13 +326,15 @@ scriptReferenceV2Input
   -- ^ Datum
   -> r
   -- ^ Redeemer
+  -> Maybe Budget
   -> Tx ()
-scriptReferenceV2Input utxo scriptReferenceUtxo datum redeemer = putpend $ mempty {
+scriptReferenceV2Input utxo scriptReferenceUtxo datum redeemer budget = putpend $ mempty {
     tInputs = pure $ Input utxo $ SpendingReference $ SpendingReferenceInfo
       { srIsPlutusV2 = True
       , srReferenceInput = scriptReferenceUtxo
       , srDatum     = Datum $ toCliJson datum
       , srRedeemer       = toCliJson redeemer
+      , srBudget         = budget
       }
   }
 
@@ -689,8 +703,8 @@ toTestnetFlags = \case
 managedSystemTempFile :: String -> Managed (FilePath, Handle)
 managedSystemTempFile n = managed (withSystemTempFile n . curry)
 
-toScriptFlags :: ScriptInfo -> Managed [String]
-toScriptFlags = \case
+toScriptFlagsWith :: Bool -> ScriptInfo -> Managed [String]
+toScriptFlagsWith outputBudgetFlags = \case
   NoScript -> pure []
   SimpleScriptReference utxo -> pure ["--simple-script-tx-in-reference", pprUtxo utxo]
   SpendingReference SpendingReferenceInfo {..} -> do
@@ -723,6 +737,7 @@ toScriptFlags = \case
       <> [ "--spending-reference-tx-in-redeemer-file"
          , redeemerFile
          ]
+      <> if outputBudgetFlags then maybe [] (\b -> ["--spending-reference-tx-in-execution-units", budgetToFlagOutput b]) srBudget else []
   InplaceScript InplaceScriptInfo {..} -> do
     (redeemerFile, rfh) <- managedSystemTempFile "redeemer.json"
     liftIO $ do
@@ -748,16 +763,24 @@ toScriptFlags = \case
       <> [ "--tx-in-redeemer-file"
          , redeemerFile
         ]
+      <> if outputBudgetFlags then maybe [] (\b -> ["--tx-in-execution-units", budgetToFlagOutput b]) isiBudget else []
 
 toInputFlags :: Input -> Managed [String]
 toInputFlags Input {..} =
-  mappend ["--tx-in", pprUtxo iUtxo] <$> toScriptFlags iScriptInfo
+  mappend ["--tx-in", pprUtxo iUtxo] <$> toScriptFlagsWith False iScriptInfo
+
+toInputRawFlags :: Input -> Managed [String]
+toInputRawFlags Input {..} =
+  mappend ["--tx-in", pprUtxo iUtxo] <$> toScriptFlagsWith True iScriptInfo
 
 pprUtxo :: UTxO -> String
 pprUtxo UTxO{..} = utxoTx <> "#" <> show utxoIndex
 
 inputsToFlags :: [Input] -> Managed [String]
 inputsToFlags = fmap mconcat . traverse toInputFlags
+
+inputsToRawFlags :: [Input] -> Managed [String]
+inputsToRawFlags = fmap mconcat . traverse toInputRawFlags
 
 flattenValue :: Value -> [(String, String, Integer)]
 flattenValue (Value m) =  concatMap (\(pId, t) -> map (\(tn, c) -> (pId, tn, c)) $ M.toList t) $ M.toList m
@@ -852,6 +875,24 @@ transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder 
     , toBodyFlags tmpDir
     ]
 
+
+transactionBuilderToRawFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> TransactionBuilder -> Integer -> Managed [String]
+transactionBuilderToRawFlags tmpDir testnet protocolParams TransactionBuilder {..} fee = do
+  inputs <- inputsToRawFlags tInputs
+  pure . mconcat $
+    [ ["transaction", "build-raw", "--babbage-era"]
+    , toTestnetFlags testnet
+    , toProtocolParams protocolParams
+    , inputs
+    , collateralToFlags tCollateral
+    , outputsToFlags tOutputs
+    , signersToRequiredSignerFlags tSignatures
+    , mintsToFlags tMint
+    , toTimeRangeFlags tTimeRange
+    , toBodyFlags tmpDir
+    , ["--fee", show fee]
+    ]
+
 toSigningBodyFlags :: FilePath -> [String]
 toSigningBodyFlags tmpDir = ["--tx-body-file", tmpDir </> "body.txt"]
 
@@ -900,6 +941,38 @@ eval EvalConfig {..} (Tx m) =
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
     txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
     bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams txBuilder
+
+    liftIO $ do
+      void $ runCardanoCli bodyFlags
+      let
+        bodyFile = toSigningBodyFlags tempDir
+      -- get the txid
+      txId <- fmap init $ runCardanoCli $ ["transaction", "txid"] <> bodyFile
+
+      void . runCardanoCli . transactionBuilderToSignFlags tempDir ecTestnet $ txBuilder
+
+      void . runCardanoCli . mconcat $
+        [ [ "transaction", "submit" ]
+        , toTestnetFlags ecTestnet
+        , ["--tx-file", tempDir </> "signed-body.txt"]
+        ]
+
+      pure $ txId
+
+evalRaw :: EvalConfig -> Integer -> Tx () -> IO String
+evalRaw EvalConfig {..} fee (Tx m) =
+  let
+    runCardanoCli args = do
+      print args
+      (exitCode, outStr) <- readProcessInterleaved . proc "cardano-cli" $ args
+      case exitCode of
+        ExitSuccess -> pure $ BSLC.unpack outStr
+        ExitFailure _ -> liftIO . throwIO . EvalException "cardano-cli" args . BSLC.unpack $ outStr
+
+  in flip with pure $ do
+    tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
+    txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
+    bodyFlags <- transactionBuilderToRawFlags tempDir ecTestnet ecProtocolParams txBuilder fee
 
     liftIO $ do
       void $ runCardanoCli bodyFlags
