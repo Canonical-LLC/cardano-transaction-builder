@@ -894,7 +894,6 @@ transactionBuilderToRawFlags tmpDir testnet protocolParams TransactionBuilder {.
   inputs <- inputsToRawFlags tInputs
   pure . mconcat $
     [ ["transaction", "build-raw", "--babbage-era"]
-    , toTestnetFlags testnet
     , toProtocolParams protocolParams
     , inputs
     , collateralToFlags tCollateral
