@@ -902,8 +902,8 @@ transactionBuilderToRawFlags tmpDir testnet protocolParams TransactionBuilder {.
     , signersToRequiredSignerFlags tSignatures
     , mintsToFlags tMint
     , toTimeRangeFlags tTimeRange
-    , toBodyFlags tmpDir
     , ["--fee", show fee]
+    , toBodyFlags tmpDir
     ]
 
 toSigningBodyFlags :: FilePath -> [String]
