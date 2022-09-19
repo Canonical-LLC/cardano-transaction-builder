@@ -871,8 +871,8 @@ toProtocolParams = maybe [] (("--protocol-params-file":) . pure)
 toBodyFlags :: FilePath -> [String]
 toBodyFlags tmpDir = ["--out-file", tmpDir </> "body.txt"]
 
-transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> TransactionBuilder -> Managed [String]
-transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder {..} = do
+transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> Bool -> TransactionBuilder -> Managed [String]
+transactionBuilderToBuildFlags tmpDir testnet protocolParams useRequiredSigners TransactionBuilder {..} = do
   inputs <- inputsToFlags tInputs
   pure . mconcat $
     [ ["transaction", "build", "--babbage-era"]
@@ -882,15 +882,15 @@ transactionBuilderToBuildFlags tmpDir testnet protocolParams TransactionBuilder 
     , collateralToFlags tCollateral
     , outputsToFlags tOutputs
     , changeAddressToFlag tChangeAddress
-    , signersToRequiredSignerFlags tSignatures
+    , if useRequiredSigners then signersToRequiredSignerFlags tSignatures else []
     , mintsToFlags tMint
     , toTimeRangeFlags tTimeRange
     , toBodyFlags tmpDir
     ]
 
 
-transactionBuilderToRawFlags :: FilePath -> Maybe FilePath -> TransactionBuilder -> Integer -> Managed [String]
-transactionBuilderToRawFlags tmpDir protocolParams TransactionBuilder {..} fee = do
+transactionBuilderToRawFlags :: FilePath -> Maybe FilePath -> Bool -> TransactionBuilder -> Integer -> Managed [String]
+transactionBuilderToRawFlags tmpDir protocolParams useRequiredSigners TransactionBuilder {..} fee = do
   inputs <- inputsToRawFlags tInputs
   pure . mconcat $
     [ ["transaction", "build-raw", "--babbage-era"]
@@ -898,7 +898,7 @@ transactionBuilderToRawFlags tmpDir protocolParams TransactionBuilder {..} fee =
     , inputs
     , collateralToFlags tCollateral
     , outputsToFlags tOutputs
-    , signersToRequiredSignerFlags tSignatures
+    , if useRequiredSigners then signersToRequiredSignerFlags tSignatures else []
     , mintsToFlags tMint
     , toTimeRangeFlags tTimeRange
     , ["--fee", show fee]
@@ -924,20 +924,22 @@ transactionBuilderToSignFlags tmpDir testnet TransactionBuilder {..} = mconcat
   ]
 
 data EvalConfig = EvalConfig
-  { ecOutputDir      :: Maybe FilePath
-  , ecTestnet        :: Maybe Integer
-  , ecProtocolParams :: Maybe FilePath
+  { ecOutputDir          :: Maybe FilePath
+  , ecTestnet            :: Maybe Integer
+  , ecProtocolParams     :: Maybe FilePath
+  , ecUseRequiredSigners :: Bool
   } deriving (Show, Eq, Generic)
 
 instance Semigroup EvalConfig where
   x <> y = EvalConfig
-    { ecOutputDir      = ecOutputDir      x <|> ecOutputDir      y
-    , ecTestnet        = ecTestnet        x <|> ecTestnet        y
-    , ecProtocolParams = ecProtocolParams x <|> ecProtocolParams y
+    { ecOutputDir          = ecOutputDir          x <|> ecOutputDir          y
+    , ecTestnet            = ecTestnet            x <|> ecTestnet            y
+    , ecProtocolParams     = ecProtocolParams     x <|> ecProtocolParams     y
+    , ecUseRequiredSigners = ecUseRequiredSigners x ||  ecUseRequiredSigners y
     }
 
 instance Monoid EvalConfig where
-  mempty = EvalConfig Nothing Nothing Nothing
+  mempty = EvalConfig Nothing Nothing Nothing False
 
 eval :: EvalConfig -> Tx () -> IO String
 eval EvalConfig {..} (Tx m) =
@@ -952,7 +954,7 @@ eval EvalConfig {..} (Tx m) =
   in flip with pure $ do
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
     txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
-    bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams txBuilder
+    bodyFlags <- transactionBuilderToBuildFlags tempDir ecTestnet ecProtocolParams ecUseRequiredSigners txBuilder
 
     liftIO $ do
       void $ runCardanoCli bodyFlags
@@ -984,7 +986,7 @@ evalRaw EvalConfig {..} fee (Tx m) =
   in flip with pure $ do
     tempDir <- maybe (managed (withSystemTempDirectory "tx-builder")) pure ecOutputDir
     txBuilder <- liftIO . execStateT (runReaderT m ecTestnet) $ mempty
-    bodyFlags <- transactionBuilderToRawFlags tempDir ecProtocolParams txBuilder fee
+    bodyFlags <- transactionBuilderToRawFlags tempDir ecProtocolParams ecUseRequiredSigners txBuilder fee
 
     liftIO $ do
       void $ runCardanoCli bodyFlags
