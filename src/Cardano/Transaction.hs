@@ -811,25 +811,35 @@ valueToOutput
 pprJson :: Aeson.Value -> String
 pprJson = BSLC.unpack . Aeson.encode
 
-datumToOutputs :: OutputDatum -> [String]
+-- TODO this needs to use the files
+datumToOutputs :: OutputDatum -> Managed [String]
 datumToOutputs = \case
-  NoOutputDatum -> []
-  OutputDatumHash dh -> ["--tx-out-datum-hash", dh]
-  OutputDatumValue d -> ["--tx-out-datum-embed-value", pprJson d]
-  OutputDatumInlineValue d -> ["--tx-out-inline-datum-value", pprJson d]
+  NoOutputDatum -> pure []
+  OutputDatumHash dh -> pure ["--tx-out-datum-hash", dh]
+  OutputDatumValue d -> do
+    (filePath, fh) <- managedSystemTempFile "datum.json"
+    liftIO $ BSL.hPutStr fh (Aeson.encode d) >> hClose fh
+    pure ["--tx-out-datum-embed-file", filePath]
+  OutputDatumInlineValue d -> do
+    (filePath, fh) <- managedSystemTempFile "datum.json"
+    liftIO $ BSL.hPutStr fh (Aeson.encode d) >> hClose fh
+    pure ["--tx-out-inline-datum-file", filePath]
 
-outputToFlags :: Output -> [String]
+outputToFlags :: Output -> Managed [String]
 outputToFlags Output {..}
-  | oValue == mempty = []
-  | otherwise
-    = [ "--tx-out"
-      , oAddress <> " " <> valueToOutput oValue
-      ]
-    <> datumToOutputs oDatumInfo
-    <> maybe [] (\fp -> ["--tx-out-reference-script-file", fp]) oScriptReference
+  | oValue == mempty = pure []
+  | otherwise = do
+    datums <- datumToOutputs oDatumInfo
+    pure
+      $ [ "--tx-out"
+        , oAddress <> " " <> valueToOutput oValue
+        ]
+      <> datums
+      <> maybe [] (\fp -> ["--tx-out-reference-script-file", fp]) oScriptReference
 
-outputsToFlags :: [Output] -> [String]
-outputsToFlags = concatMap outputToFlags
+
+outputsToFlags :: [Output] -> Managed [String]
+outputsToFlags = fmap concat . mapM outputToFlags
 
 changeAddressToFlag :: Last Address -> [String]
 changeAddressToFlag = \case
@@ -883,6 +893,7 @@ toReadOnlyReferenceInputFlags = concatMap toReadOnlyReferenceInputFlag
 transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> Bool -> TransactionBuilder -> Managed [String]
 transactionBuilderToBuildFlags tmpDir testnet protocolParams useRequiredSigners TransactionBuilder {..} = do
   inputs <- inputsToFlags tInputs
+  outputs <- outputsToFlags tOutputs
   pure . mconcat $
     [ ["transaction", "build", "--babbage-era"]
     , toTestnetFlags testnet
@@ -891,7 +902,7 @@ transactionBuilderToBuildFlags tmpDir testnet protocolParams useRequiredSigners 
     , toReadOnlyReferenceInputFlags tReadonlyInputs
     , if useRequiredSigners then signersToRequiredSignerFlags tSignatures else []
     , collateralToFlags tCollateral
-    , outputsToFlags tOutputs
+    , outputs
     , changeAddressToFlag tChangeAddress
     , mintsToFlags tMint
     , toTimeRangeFlags tTimeRange
@@ -902,12 +913,13 @@ transactionBuilderToBuildFlags tmpDir testnet protocolParams useRequiredSigners 
 transactionBuilderToRawFlags :: FilePath -> Maybe FilePath -> Bool -> TransactionBuilder -> Integer -> Managed [String]
 transactionBuilderToRawFlags tmpDir protocolParams useRequiredSigners TransactionBuilder {..} fee = do
   inputs <- inputsToRawFlags tInputs
+  outputs <- outputsToFlags tOutputs
   pure . mconcat $
     [ ["transaction", "build-raw", "--babbage-era"]
     , toProtocolParams protocolParams
     , inputs
     , collateralToFlags tCollateral
-    , outputsToFlags tOutputs
+    , outputs
     , if useRequiredSigners then signersToRequiredSignerFlags tSignatures else []
     , mintsToFlags tMint
     , toTimeRangeFlags tTimeRange
