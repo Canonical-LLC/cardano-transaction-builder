@@ -874,6 +874,12 @@ toProtocolParams = maybe [] (("--protocol-params-file":) . pure)
 toBodyFlags :: FilePath -> [String]
 toBodyFlags tmpDir = ["--out-file", tmpDir </> "body.txt"]
 
+toReadOnlyReferenceInputFlag :: ReadonlyInput -> [String]
+toReadOnlyReferenceInputFlag (ReadonlyInput utxo) = ["--read-only-tx-in-reference", pprUtxo utxo]
+
+toReadOnlyReferenceInputFlags :: [ReadonlyInput] -> [String]
+toReadOnlyReferenceInputFlags = concatMap toReadOnlyReferenceInputFlag
+
 transactionBuilderToBuildFlags :: FilePath -> Maybe Integer -> Maybe FilePath -> Bool -> TransactionBuilder -> Managed [String]
 transactionBuilderToBuildFlags tmpDir testnet protocolParams useRequiredSigners TransactionBuilder {..} = do
   inputs <- inputsToFlags tInputs
@@ -882,10 +888,11 @@ transactionBuilderToBuildFlags tmpDir testnet protocolParams useRequiredSigners 
     , toTestnetFlags testnet
     , toProtocolParams protocolParams
     , inputs
+    , toReadOnlyReferenceInputFlags tReadonlyInputs
+    , if useRequiredSigners then signersToRequiredSignerFlags tSignatures else []
     , collateralToFlags tCollateral
     , outputsToFlags tOutputs
     , changeAddressToFlag tChangeAddress
-    , if useRequiredSigners then signersToRequiredSignerFlags tSignatures else []
     , mintsToFlags tMint
     , toTimeRangeFlags tTimeRange
     , toBodyFlags tmpDir
