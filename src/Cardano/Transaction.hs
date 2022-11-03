@@ -296,6 +296,9 @@ collateral utxo = putpend $ mempty { tCollateral = pure utxo }
 input :: UTxO -> Tx ()
 input x = putpend $ mempty { tInputs = [Input x NoScript] }
 
+readOnlyInput :: UTxO -> Tx ()
+readOnlyInput x = putpend $ mempty { tReadonlyInputs = [ReadonlyInput x] }
+
 scriptInput
   :: (A.ToData d, A.ToData r)
   => UTxO
